@@ -3,59 +3,43 @@
 =======================
 Typology-specific Isolation Forest ensemble for AML risk scoring.
 
-Six typologies selected by working through AML_Knowledge_Library.xlsx
-indicators and mapping each against available data columns:
+Five typologies mapped directly from AML-indicator-DB.xlsx.
+One Isolation Forest is trained per typology, each on its own dedicated
+feature set. The five scores are then combined in 03_hybrid_model.py.
 
-Selection process:
-  1. Listed 9 candidate patterns from knowledge library review
-  2. Checked each against actual column availability in the dataset
-  3. Merged overlapping patterns where features were too similar
-  4. Dropped patterns requiring unavailable data
+  1. structuring_layering
+       STRUCT-001..009, ATYPICAL-006..008, BEHAV-001, PROF-006/007
+       Threshold avoidance, round amounts, multi-location ABM deposits,
+       rapid pass-through (same-day in/out), EFT/EMT velocity.
+       Merged from old structuring + layering — both share the core
+       signal of unusual transaction sizing and fund velocity.
 
-Final six typologies (non-overlapping feature sets):
+  2. behavioural_profile
+       PROF-001..010, ACCT-001..004, ATYPICAL-001..008
+       Activity inconsistent with KYC profile: spending vs income,
+       sudden change in volume patterns, erratic transaction sizing,
+       dormant account reactivation, credit card usage surge (ACCT-003).
+       Merged from old money_mules + profile_mismatch — both target
+       customers whose behaviour doesn't match their declared profile.
 
-  structuring         STRUCT-001..009, BEHAV-001
-                      Threshold avoidance, round amounts, multi-location ABM.
-                      Fully supported — amount_cad available on all channels.
+  3. trade_shell
+       PML-TBML-02..08, PROF-004, GATE-001
+       Business volume far exceeding declared sales, high-risk industry
+       codes, EFT inflow spikes (PML-TBML-04 — direct from eft.csv),
+       shell company signal via flow-through + low employee count.
 
-  trade_and_shells    PML-TBML-01..08, ATYPICAL-004, OIL-06, PROF-004
-                      Business volume vs declared sales, industry risk, EFT spikes.
-                      Shell companies merged here — both target business customers
-                      with volume/sales mismatches. Shells get unique signal from
-                      flow_through_ratio (pass-through with no retained balance)
-                      and employee_count (minimal staff with high volume).
+  4. cross_border_geo
+       GEO-001..005, WIRE-008, WIRE-010
+       Transactions with FATF blacklist / greylist / drug-transit
+       jurisdictions, frequent overseas transfers, wire volume mismatch.
+       Card merchant country data now available (card_unique_countries).
 
-  money_mules         CMLN-MULE-01..04, FENT-LAY-07, UB-ATH-15
-                      Income vs inflow mismatch, youth + high outflow velocity,
-                      occupation gap. Distinct from profile_mismatch by emphasizing
-                      the EMT/wire outflow velocity and age signals.
-
-  profile_mismatch    PROF-001..010, ACCT-001..004, ATYPICAL-001..008
-                      Broad behavioural inconsistency with KYC profile.
-                      Focuses on individual customers and sudden change signals.
-                      Does NOT include income ratio (money_mules) or business
-                      volume ratio (trade_and_shells) to avoid overlap.
-
-  geographic_risk     GEO-001..005, PML-MSB-02, PML-MSB-10
-                      High-risk jurisdiction exposure and international activity.
-                      Limited to ABM channel (only one with country data) plus
-                      wire/WU as channel-level geographic proxies.
-
-  layering            ATYPICAL-007/008, CMLN-MULE-03/04, FENT-LAY-01..05,
-                      WIRE-006..010, PML-MSB-07
-                      Pass-through, fund velocity, instrument mixing, wire
-                      consolidation. Absorbs wire transfer patterns (channel-level
-                      signals belong to the layering behaviour) and fintech
-                      exploitation (EMT-heavy P2P patterns are layering via
-                      digital instruments).
-
-Patterns not supported by available data:
-  - Fintech exploitation: needs card MCC for gambling/crypto — absent
-  - Wire transfers (standalone): wire is a channel; behaviour = layering
-    Wire signals folded into layering forest
-  - Human trafficking: needs card MCC for hotel/spa/gift cards — absent
-  - Terrorist financing: needs travel/sanctions data — absent
-  - Bribery/corruption: needs PEP flags — absent
+  5. human_trafficking
+       HT-SEX-01..14 (full set — card.csv, eft.csv, emt.csv available)
+       Card MCC signals: after-hours spa/massage (HT-SEX-12), luxury
+       spend (HT-SEX-03), accommodation (HT-SEX-08), travel (HT-SEX-10),
+       parking/delivery (HT-SEX-04/05). EMT/EFT debit outflows for
+       rental payments (HT-SEX-14). Multi-city ABM night cash (HT-SEX-07).
 
 Usage:
     python 02_isolation_forest.py --base_dir /path/to/AML_Competition
@@ -77,149 +61,181 @@ np.random.seed(42)
 
 
 # ---------------------------------------------------------------------------
-# Typology feature sets — non-overlapping by design
-# Each feature appears in exactly ONE typology.
+# Typology feature sets — aligned to AML-indicator-DB.xlsx
+# Each list entry is an exact column name or substring pattern.
+# resolve_feature_cols() tries exact match first, then substring.
 # ---------------------------------------------------------------------------
 
 TYPOLOGY_FEATURE_PATTERNS = {
 
-    # ── 1. Structuring / Smurfing ──────────────────────────────────────────
-    # STRUCT-001..009, BEHAV-001
-    # Breaking amounts below $10K CTR threshold, round numbers, multi-location
-    # cash deposits. Fully computable from amount_cad on any channel.
-    "structuring": [
+    # ── 1. Structuring & Layering ──────────────────────────────────────────
+    # STRUCT-001: Cash deposits below $10K (ABM cash_indicator)
+    # STRUCT-003: Transactions $9,000–$9,999 (near-threshold avoidance)
+    # STRUCT-006: High transaction velocity in short period
+    # ATYPICAL-007: Rapid in-and-out / cash deposit then immediate EFT out
+    # ATYPICAL-008: Funds in and out on same day
+    # BEHAV-001:   Multi-location transactions (location hopping)
+    # PROF-006:    Large rapid fund movement inconsistent with profile
+    # PROF-007:    Rounded sum transactions
+    "structuring_layering": [
         "count_near_10k",
         "count_very_near_10k",
         "count_below_10k",
         "ratio_below_10k",
+        "cash_struct_count",           # STRUCT-001: ABM cash below $10K
         "count_round_100",
         "ratio_round_100",
         "count_round_1000",
         "ratio_round_1000",
-        "unique_cities",
+        "flow_through_ratio",          # ATYPICAL-007/008: same-day pass-through
+        "transactions_per_active_day", # STRUCT-006: velocity
+        "volume_per_day",
+        "unique_cities",               # BEHAV-001: location hopping
         "unique_provinces",
-        "avg_txn_per_city",
         "count_abm",
         "sum_abm",
-    ],
-
-    # ── 2. Trade-Based ML + Shell Companies ───────────────────────────────
-    # PML-TBML-01..08, ATYPICAL-004, OIL-06, PROF-004
-    # Business customers with volume far exceeding declared sales, high-risk
-    # industry codes, EFT/wire spikes inconsistent with business profile.
-    # Shell companies detected via flow-through (no retained balance) and
-    # low employee count with high volume.
-    # employee_count sourced from kyc_smallbusiness.csv.
-    "trade_and_shells": [
-        "volume_to_sales_ratio",
-        "industry_risk_high",
+        "count_eft",                   # ATYPICAL-007: rapid EFT pass-through
         "sum_eft",
-        "count_eft",
-        "sum_wire",
-        "count_wire",
-        "flow_through_ratio",
-        "is_business",
-        "employee_count",
-        "ratio_round_1000",
-        "has_wire",
-        "monthly_txn_cv",
-    ],
-
-    # ── 3. Money Mules ────────────────────────────────────────────────────
-    # CMLN-MULE-01..04, FENT-LAY-07, UB-ATH-15
-    # Individual customers receiving funds disproportionate to income/occupation.
-    # Key differentiator from profile_mismatch: emphasizes youth signal (age),
-    # EMT/wire outflow velocity, and occupation gap — the three signals that
-    # specifically identify mule accounts rather than general profile anomalies.
-    "money_mules": [
-        "income_vol_ratio",
-        "spending_to_income_ratio",
-        "age",
-        "occupation_risk_high",
-        "count_emt",
+        "count_emt",                   # ATYPICAL-007: rapid EMT pass-through
         "sum_emt",
-        "customer_tenure_days",
-        "transactions_per_active_day",
-        "total_inflow",
-        "inflow_per_day",
-        "is_individual",
+        "count_wire",
+        "sum_wire",                    # PROF-006: large rapid wire movement
+        "count_cheque",
     ],
 
-    # ── 4. Profile Mismatch / Account Activity / Atypical ─────────────────
-    # PROF-001..010, ACCT-001..004, ATYPICAL-001..008
-    # Broad behavioural inconsistency — sudden changes, dormant activation,
-    # erratic patterns. Focuses on change signals rather than ratio signals
-    # (which belong to money_mules and trade_and_shells).
-    "profile_mismatch": [
-        "monthly_volume_cv",
-        "monthly_txn_count_std",
-        "amount_cv",
+    # ── 2. Behavioural & Profile Anomalies ────────────────────────────────
+    # PROF-001: Activity far exceeds projected at account opening
+    # PROF-002: Activity inconsistent with financial standing / occupation
+    # PROF-005: Living beyond means — more spending than income
+    # PROF-008: Transaction type/size atypical of expectations
+    # PROF-010: Sudden change in financial profile
+    # ACCT-001: Dormant account reactivation
+    # ACCT-002: Periodic deposits with inactivity otherwise
+    # ACCT-003: Sudden increase in credit card usage
+    # ACCT-004: Abrupt change in account activity
+    "behavioural_profile": [
+        "spending_to_income_ratio",    # PROF-002/005: financial standing
+        "income_vol_ratio",            # PROF-001: activity vs expectation
+        "monthly_volume_cv",           # PROF-010 / ACCT-004: sudden change
+        "monthly_txn_count_std",       # ACCT-002: periodicity / erratic patterns
+        "amount_cv",                   # PROF-008: transaction size atypical
         "std_transaction_amount",
         "max_transaction_amount",
         "avg_transaction_amount",
-        "time_span_days",
-        "has_any_high_risk_txn",
-        "channel_diversity",
+        "channel_diversity",           # ACCT-002: channel mixing
         "channel_concentration_hhi",
-        "transaction_count_total",
+        "count_card",                  # ACCT-003: credit card usage surge
+        "sum_card",
+        "transaction_count_total",     # PROF-003: volume vs geographic norm
         "net_flow",
         "active_days",
+        "time_span_days",
+        "customer_tenure_days",        # ACCT-001: new customer high activity
+        "is_individual",
+        "age",
+        "occupation_risk_high",        # PROF-002: occupation gap
     ],
 
-    # ── 5. Geographic Risk ────────────────────────────────────────────────
-    # GEO-001..005, PML-MSB-02, PML-MSB-10
-    # Transactions with high-risk jurisdictions. ABM is the only channel with
-    # country data — geographic signals limited to cash transactions.
-    # WesternUnion is included as a proxy for cross-border risk where
-    # country data is unavailable (WU is inherently international).
-    "geographic_risk": [
-        "drug_country_txn_count",
-        "drug_country_txn_sum",
-        "high_risk_fatf_txn_count",
-        "greylist_txn_count",
-        "offshore_center_txn_count",
-        "underground_banking_country_count",
-        "international_txn_count",
+    # ── 3. Trade-Based ML & Shell Entities ────────────────────────────────
+    # PML-TBML-02: Business activities outside sector norm
+    # PML-TBML-03: Transacts with large number of entities
+    # PML-TBML-04: Sudden large EFT inflow (direct from eft.csv)
+    # PML-TBML-08: Round-figure payments (~$50K increments)
+    # PROF-004:    Activity inconsistent with declared business
+    # GATE-001:    Gatekeeper pass-through (atypical account use)
+    "trade_shell": [
+        "volume_to_sales_ratio",       # PROF-004 / PML-TBML-05: volume vs declared sales
+        "industry_risk_high",          # PML-TBML-02: sector deviation
+        "employee_count",              # shell signal: high volume, minimal staff
+        "flow_through_ratio",          # GATE-001: pass-through / gatekeeper
+        "eft_credit_sum",              # PML-TBML-04: sudden large EFT inflow (direct)
+        "eft_credit_count",
+        "sum_eft",
+        "count_eft",
+        "sum_wire",                    # PML-TBML-03: high-value wire to multiple parties
+        "count_wire",
+        "ratio_round_1000",            # PML-TBML-08: round sum invoices (~$50K)
+        "count_round_1000",
+        "monthly_txn_cv",              # PML-TBML-04: sudden spike pattern
+        "is_business",
+        "has_wire",
+        "has_eft",
+        "inflow_per_day",
+        "total_inflow",
+    ],
+
+    # ── 4. Cross-Border & Geographic Risk ─────────────────────────────────
+    # GEO-001: Drug-producing / transit jurisdictions
+    # GEO-002: Jurisdictions at higher ML/TF risk
+    # GEO-003: Locations of concern (conflict, weak controls, secretive banking)
+    # GEO-004: FATF non-cooperative / high-risk countries
+    # GEO-005: Frequent overseas transfers not in line with financial profile
+    # WIRE-008: Large wire transfers to foreign accounts (volume mismatch)
+    # WIRE-010: Wire transfers from/to multiple parties
+    "cross_border_geo": [
+        "drug_country_txn_count",           # GEO-001: MX, CO, PE, BO, etc.
+        "high_risk_fatf_txn_count",         # GEO-002/004: FATF blacklist (KP, IR, MM)
+        "greylist_txn_count",               # GEO-003: FATF greylist
+        "offshore_center_txn_count",        # GEO-003: secretive banking / offshore
+        "underground_banking_country_count",# GEO-003: CN/HK/PH underground banking
+        "international_txn_count",          # GEO-005: frequency of overseas transfers
         "international_txn_sum",
-        "international_ratio",
+        "international_ratio",              # GEO-005: proportion of cross-border activity
         "unique_countries",
         "has_any_high_risk_txn",
-        "sum_westernunion",
+        "sum_westernunion",                 # GEO-005: WU inherently international
         "count_westernunion",
         "has_western_union",
+        "sum_wire",                         # WIRE-008: large wire to foreign accounts
+        "count_wire",                       # WIRE-010: multiple wire parties
+        "card_unique_countries",            # GEO-005: card merchant countries (direct)
     ],
 
-    # ── 6. Layering ───────────────────────────────────────────────────────
-    # ATYPICAL-007/008, CMLN-MULE-03, FENT-LAY-01..05
-    # WIRE-006..010, PML-MSB-07
-    # Rapid movement of funds through accounts to obscure origin.
-    # Absorbs wire transfer patterns (wire volume = layering via wires)
-    # and fintech/EMT P2P patterns (EMT pass-through = digital layering).
-    # Core signal: money enters and immediately exits via multiple instruments.
-    "layering": [
-        "flow_through_ratio",
-        "inflow_outflow_ratio",
-        "net_flow",
-        "monthly_txn_cv",
-        "monthly_volume_std",
-        "transactions_per_day",
-        "volume_per_day",
-        "outflow_per_day",
-        "count_cheque",
-        "sum_cheque",
-        "total_outflow",
-        "total_inflow",
-        "total_volume",
+    # ── 5. Human Trafficking ──────────────────────────────────────────────
+    # HT-SEX-01/02: Retail/convenience purchases — gift card proxy (MCC 5411/5912/5310)
+    # HT-SEX-03:    Luxury spend vs income (MCC 5094/5944)
+    # HT-SEX-04/05: Parking + food delivery — victim maintenance (MCC 7523/5814)
+    # HT-SEX-06:    Digital / crypto / gambling (MCC 4816/7995)
+    # HT-SEX-07:    Multi-city ABM cash at night (accommodation pattern)
+    # HT-SEX-08:    Accommodation card spend in non-residential cities (MCC 7011)
+    # HT-SEX-10:    Airfare to high-risk source countries (MCC 4511/4722)
+    # HT-SEX-12:    After-hours spa/massage/escort card (MCC 7297/7298)
+    # HT-SEX-13:    High-value transfers disproportionate to income
+    # HT-SEX-14:    Rental/maintenance payments via EMT/EFT (direct)
+    "human_trafficking": [
+        "card_adult_afterhours_count", # HT-SEX-12: after-hours spa/massage (card MCC direct)
+        "card_afterhours_count",       # HT-SEX-12: general after-hours card activity
+        "night_transaction_ratio",     # HT-SEX-12: after-hours all-channel signal
+        "night_abm_count",             # HT-SEX-07: ABM cash at night across cities
+        "unique_cities",               # HT-SEX-07/08: multi-city travel pattern
+        "unique_provinces",
+        "card_accommodation_count",    # HT-SEX-08: accommodation in non-residential cities
+        "card_accommodation_sum",
+        "card_luxury_sum",             # HT-SEX-03: luxury spend vs income
+        "card_luxury_count",
+        "card_travel_sum",             # HT-SEX-10: airfare to source countries
+        "card_travel_count",
+        "ht_source_country_txn_count", # HT-SEX-10: txns to high-risk source countries
+        "card_parking_count",          # HT-SEX-04: frequent parking (victim transit)
+        "card_delivery_count",         # HT-SEX-05: food delivery (victim maintenance)
+        "card_digital_count",          # HT-SEX-06: virtual currency / online gambling
+        "card_retail_count",           # HT-SEX-01/02: retail/gift card purchases
+        "emt_debit_count",             # HT-SEX-14: e-transfer rental payments (direct)
+        "eft_debit_count",             # HT-SEX-14: EFT rental payments (direct)
+        "spending_to_income_ratio",    # HT-SEX-13: disproportionate to income
+        "sum_westernunion",            # HT-SEX-10: WU to source countries
+        "ht_accommodation_sector",     # HT-SEX-07: business in accommodation/hospitality
+        "is_individual",
+        "weekend_ratio",               # HT-SEX-12: weekend activity concentration
     ],
 }
 
 TYPOLOGY_LABELS = {
-    "structuring":       "Structuring / Smurfing (FINTRAC — STRUCT-001..009)",
-    "trade_and_shells":  "Trade-Based ML & Shell Companies (PML-TBML-01..08, ATYPICAL-004)",
-    "money_mules":       "Money Mules (CMLN-MULE-01..04, FENT-LAY-07)",
-    "profile_mismatch":  "Profile Mismatch & Account Activity (PROF-001..010, ACCT-001..004)",
-    "geographic_risk":   "Geographic Risk (GEO-001..005, PML-MSB-02/10)",
-    "layering":          "Layering & Fund Movement (ATYPICAL-007/008, WIRE-006..010)",
+    "structuring_layering": "Structuring & Layering (STRUCT-001..009, ATYPICAL-006..008, BEHAV-001)",
+    "behavioural_profile":  "Behavioural & Profile Anomalies (PROF-001..010, ACCT-001..004)",
+    "trade_shell":          "Trade-Based ML & Shell Entities (PML-TBML-02..08, PROF-004, GATE-001)",
+    "cross_border_geo":     "Cross-Border & Geographic Risk (GEO-001..005, WIRE-008/010)",
+    "human_trafficking":    "Human Trafficking (HT-SEX-01..14)",
 }
 
 EXCLUDE_COLS = {
@@ -234,7 +250,7 @@ LOG_TRANSFORM_PATTERNS = [
     "volume", "outflow", "inflow", "sum_", "count_",
     "total_", "amount", "txn_count", "net_flow",
     "international_txn", "drug_country", "greylist", "offshore",
-    "employee",
+    "employee", "night_", "ht_source", "card_",
 ]
 
 
@@ -342,12 +358,11 @@ def print_validation(typology, scores, labels):
 
 def verify_grounding(typology, scores, df, top_n=50):
     key_features = {
-        "structuring":      ["count_near_10k", "count_very_near_10k", "ratio_round_100", "unique_cities"],
-        "trade_and_shells": ["volume_to_sales_ratio", "industry_risk_high", "flow_through_ratio", "employee_count"],
-        "money_mules":      ["income_vol_ratio", "spending_to_income_ratio", "age", "count_emt"],
-        "profile_mismatch": ["monthly_volume_cv", "amount_cv", "max_transaction_amount", "channel_diversity"],
-        "geographic_risk":  ["drug_country_txn_count", "international_ratio", "sum_westernunion", "high_risk_fatf_txn_count"],
-        "layering":         ["flow_through_ratio", "monthly_txn_cv", "total_outflow", "count_cheque"],
+        "structuring_layering": ["count_near_10k", "flow_through_ratio", "ratio_round_100", "unique_cities"],
+        "behavioural_profile":  ["spending_to_income_ratio", "monthly_volume_cv", "amount_cv", "income_vol_ratio"],
+        "trade_shell":          ["volume_to_sales_ratio", "industry_risk_high", "flow_through_ratio", "employee_count"],
+        "cross_border_geo":     ["high_risk_fatf_txn_count", "international_ratio", "sum_westernunion", "drug_country_txn_count"],
+        "human_trafficking":    ["card_adult_afterhours_count", "unique_cities", "ht_source_country_txn_count", "card_luxury_sum"],
     }.get(typology, [])
 
     top_idx = np.argsort(-scores)[:top_n]
@@ -383,16 +398,18 @@ def main():
 
     print("=" * 70)
     print("TYPOLOGY-SPECIFIC ISOLATION FOREST ENSEMBLE")
+    print("5 Typologies — AML-indicator-DB.xlsx")
     print("=" * 70)
-    print(f"Typologies: {list(TYPOLOGY_FEATURE_PATTERNS.keys())}")
-    print(f"n_estimators={args.n_estimators}, contamination={args.contamination}")
-    print()
-    print("Pattern selection: 9 candidate patterns reviewed against data availability.")
-    print("Reduced to 6 non-overlapping forests:")
-    print("  Merged: trade-based ML + shell companies (shared business features)")
-    print("  Merged: wire transfers into layering (channel, not a behaviour pattern)")
-    print("  Merged: fintech exploitation into layering (EMT P2P = digital layering)")
-    print("  Dropped: human trafficking (no card MCC), terrorist financing (no travel)")
+    for name, label in TYPOLOGY_LABELS.items():
+        print(f"  [{name}] {label}")
+    print(f"\nn_estimators={args.n_estimators}, contamination={args.contamination}")
+    print("\nDesign decisions:")
+    print("  Merged: structuring + layering → structuring_layering")
+    print("          (both share threshold/velocity signals; EFT/EMT now available directly)")
+    print("  Merged: profile_mismatch + money_mules → behavioural_profile")
+    print("          (both target PROF indicators; card ACCT-003 now available)")
+    print("  Added:  human_trafficking (HT-SEX-01..14 — card MCC, EMT/EFT direct)")
+    print("  Kept:   trade_shell, cross_border_geo (clean separation, distinct signals)")
 
     print("\nLoading features...")
     df = pd.read_csv(feat_dir / "customer_features_enhanced.csv")
@@ -402,12 +419,16 @@ def main():
     labels       = df["label"].copy() if "label" in df.columns \
                    else pd.Series([np.nan]*len(df))
     print(f"   Labeled: {labels.notna().sum():,}  |  Suspicious: {int(labels.sum())}")
-    print(f"   (Labels used only as final sanity check)")
+    print("   (Labels used only as final sanity check — not for training)")
 
-    # Add employee_count from KYC if not already in features
-    if "employee_count" not in df.columns:
-        print("   Note: employee_count not in feature matrix — shell company signal unavailable")
-        print("   Add employee_count to 01_feature_engineering.py KYC merge for full shell detection")
+    # Check for key new features produced by updated 01_feature_engineering.py
+    expected = ["card_adult_afterhours_count", "ht_source_country_txn_count",
+                "ht_accommodation_sector", "cash_struct_count",
+                "card_luxury_sum", "card_accommodation_count",
+                "eft_credit_sum", "emt_debit_count"]
+    missing = [f for f in expected if f not in df.columns]
+    if missing:
+        print(f"\n   NOTE: Missing features — re-run 01_feature_engineering.py: {missing}")
 
     print("\n" + "-" * 70)
     print("Training typology-specific Isolation Forests...")
