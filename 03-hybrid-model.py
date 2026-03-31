@@ -161,7 +161,12 @@ aml_relevant_mcc = {
     # --- Misc Services (behavioral indicators) ---
     7276: "Tax Preparation Services",
     7277: "Counseling Services",
-    7399: "Business Services Not Elsewhere Classified"
+    7399: "Business Services Not Elsewhere Classified",
+
+    # --- General Stores ---
+    5499: "Miscellaneous Food Stores–Convenience Stores, Markets, Specialty Stores, and Vending Machines",
+    7210: "Cleaning, Garment and Laundry Services",
+    7211: "Laundry Services–Family and Commercial"
 }
 
 
