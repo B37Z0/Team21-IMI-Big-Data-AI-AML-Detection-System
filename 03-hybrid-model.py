@@ -166,7 +166,128 @@ aml_relevant_mcc = {
     # --- General Stores ---
     5499: "Miscellaneous Food Stores–Convenience Stores, Markets, Specialty Stores, and Vending Machines",
     7210: "Cleaning, Garment and Laundry Services",
-    7211: "Laundry Services–Family and Commercial"
+    7211: "Laundry Services–Family and Commercial",
+    5300: "Wholesale Clubs",
+    5310: "Discount Stores",
+    5311: "Department Stores",  # already included but belongs here conceptually
+    5331: "Variety Stores",
+    5399: "Miscellaneous General Merchandise Stores",  # already included
+    5411: "Grocery Stores, Supermarkets",
+    5499: "Miscellaneous Food Stores–Convenience Stores, Markets, Specialty Stores, and Vending Machines",
+    5541: "Service Stations (With or Without Ancillary Services)",
+    5542: "Automated Fuel Dispensers"
+}
+
+# Indicator maps to associated MCC codes
+aml_indicator_to_mcc = {
+
+    # --- High Value / Luxury Spending ---
+    "ATYPICAL-001": [
+        5094, 5944, 5681, 5971, 5972, 5309,
+        5311, 5399, 5999
+    ],
+
+    # --- Excessive Credit / Cash Advances / High Spend ---
+    "ATYPICAL-006": [
+        6010, 6011, 6012, 6050, 6051,  # cash / quasi-cash
+        5094, 5944, 5971, 5309,        # luxury
+        5311, 5399, 5999               # general retail
+    ],
+
+    # --- Rapid Movement of Funds / Flow-Through ---
+    "ATYPICAL-007": [
+        4829,
+        6530, 6535, 6536, 6537, 6538, 6539, 6540,
+        6010, 6011, 6050, 6051
+    ],
+
+    # --- Incoming then Outgoing Funds Quickly ---
+    "ATYPICAL-008": [
+        4829,
+        6530, 6535, 6536, 6537, 6538, 6539, 6540
+    ],
+
+    # --- Structuring / Smurfing ---
+    "STRUCT-001": [
+        6010, 6011, 6050, 6051,
+        5300, 5310, 5331, 5411, 5499, 5541, 5542
+    ],
+
+    # --- Use of Multiple Accounts / Movement Channels ---
+    "ACCT-001": [
+        4829,
+        6530, 6535, 6536, 6537, 6538, 6539, 6540,
+        6211
+    ],
+
+    # --- Gambling Activity ---
+    "GAMBLING-001": [
+        7800, 7801, 7802, 7995
+    ],
+
+    # --- Use of Cash-Equivalent Instruments ---
+    "CASH-001": [
+        6010, 6011, 6012, 6050, 6051
+    ],
+
+    # --- Use of Money Transfer / Remittance ---
+    "TRANSFER-001": [
+        4829,
+        6536, 6537, 6538, 6539, 6540
+    ],
+
+    # --- Use of General Retail for Value Cycling ---
+    "RETAIL-001": [
+        5300, 5310, 5311, 5331, 5399, 5411, 5499,
+        5541, 5542
+    ],
+
+    # --- Purchase of Resellable / Portable Goods ---
+    "RETAIL-002": [
+        5948, 5946, 5732, 5045, 5942,
+        5311, 5399, 5999
+    ],
+
+    # --- Pawn / Secondary Market Activity ---
+    "SECONDARY-001": [
+        5933, 5931, 5932
+    ],
+
+    # --- Travel / Geographic Movement ---
+    "TRAVEL-001": [
+        3000, 3351, 3501, 7011, 4722
+    ],
+
+    # --- Digital / Remote Transactions ---
+    "DIGITAL-001": [
+        5815, 5816, 5817, 5818,
+        5961, 5962, 5964, 5965, 5966, 5967, 5968, 5969
+    ],
+
+    # --- Obfuscated / Non-Face-to-Face Transactions ---
+    "REMOTE-001": [
+        5961, 5962, 5963, 5964, 5965, 5966, 5967, 5968, 5969
+    ],
+
+    # --- Alcohol / Lifestyle Indicators ---
+    "LIFESTYLE-001": [
+        5921, 5813
+    ],
+
+    # --- Insurance / Financial Layering ---
+    "INSURANCE-001": [
+        6300
+    ],
+
+    # --- Government / Legal Payments ---
+    "GOV-001": [
+        9211, 9222, 9311
+    ],
+
+    # --- Service-Based / Cash-Friendly Businesses ---
+    "SERVICE-001": [
+        7210, 7211, 7276, 7277, 7399
+    ]
 }
 
 
