@@ -572,7 +572,7 @@ def main():
     args = parser.parse_args()
 
     base_dir   = Path(args.base_dir)
-    data_dir   = base_dir
+    data_dir   = base_dir / "data"
     output_dir = base_dir / "features"
     output_dir.mkdir(exist_ok=True, parents=True)
 
