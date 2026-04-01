@@ -315,7 +315,7 @@ def _col(df: pd.DataFrame, name: str, default: float = 0.0) -> pd.Series:
            else pd.Series(default, index=df.index)
 
 
-def rules_structuring_layering(df: pd.DataFrame) -> pd.Series:
+def rules_structuring_layering(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     """
     STRUCT-001:   Sub-$10K cash deposits (count_below_10k, cash_struct_count, ratio_below_10k)
     STRUCT-006:   Burst velocity — transactions_per_active_day + volume_per_day
@@ -399,10 +399,19 @@ def rules_structuring_layering(df: pd.DataFrame) -> pd.Series:
     )
 
     s = s_struct001 + s_struct006 + s_aty006 + s_aty007 + s_behav001 + s_prof006 + s_prof007
-    return pd.Series(s, index=df.index).clip(0, 1)
+    details = pd.DataFrame({
+        "STRUCT-001": s_struct001,
+        "STRUCT-006": s_struct006,
+        "ATYPICAL-006": s_aty006,
+        "ATYPICAL-007": s_aty007,
+        "BEHAV-001": s_behav001,
+        "PROF-006": s_prof006,
+        "PROF-007": s_prof007
+    }, index=df.index)
+    return pd.Series(s, index=df.index).clip(0, 1), details
 
 
-def rules_behavioural_profile(df: pd.DataFrame) -> pd.Series:
+def rules_behavioural_profile(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     """
     ACCT-001:  Dormant activation — old account suddenly active
     ACCT-002:  Periodic patterns — erratic monthly frequency
@@ -512,10 +521,22 @@ def rules_behavioural_profile(df: pd.DataFrame) -> pd.Series:
 
     s = (s_acct001 + s_acct002 + s_acct003 + s_acct004 + s_prod008
          + s_prof001 + s_prof002 + s_prof005 + s_prof008 + s_prof010)
-    return pd.Series(s, index=df.index).clip(0, 1)
+    details = pd.DataFrame({
+        "ACCT-001": s_acct001,
+        "ACCT-002": s_acct002,
+        "ACCT-003": s_acct003,
+        "ACCT-004": s_acct004,
+        "PROD-008": s_prod008,
+        "PROF-001": s_prof001,
+        "PROF-002": s_prof002,
+        "PROF-005": s_prof005,
+        "PROF-008": s_prof008,
+        "PROF-010": s_prof010
+    }, index=df.index)
+    return pd.Series(s, index=df.index).clip(0, 1), details
 
 
-def rules_trade_shell(df: pd.DataFrame) -> pd.Series:
+def rules_trade_shell(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     """
     GATE-001:     Business account used as pure pass-through conduit
     PML-TBML-02:  Sector deviation — industry_risk_high + volume_to_sales
@@ -584,10 +605,18 @@ def rules_trade_shell(df: pd.DataFrame) -> pd.Series:
     )
 
     s = s_gate001 + s_tbml02 + s_tbml03 + s_tbml04 + s_tbml08 + s_prof004
-    return pd.Series(s, index=df.index).clip(0, 1)
+    details = pd.DataFrame({
+        "GATE-001": s_gate001,
+        "PML-TBML-02": s_tbml02,
+        "PML-TBML-03": s_tbml03,
+        "PML-TBML-04": s_tbml04,
+        "PML-TBML-08": s_tbml08,
+        "PROF-004": s_prof004
+    }, index=df.index)
+    return pd.Series(s, index=df.index).clip(0, 1), details
 
 
-def rules_cross_border_geo(df: pd.DataFrame) -> pd.Series:
+def rules_cross_border_geo(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     """
     GEO-001:   Drug-producing/transit jurisdiction transactions
     GEO-002:   FATF blacklist transactions (highest severity)
@@ -649,10 +678,19 @@ def rules_cross_border_geo(df: pd.DataFrame) -> pd.Series:
     s_wire010 = np.where(wire_n >= 15, 0.18, np.where(wire_n >= 8, 0.10, 0.0))
 
     s = s_geo001 + s_geo002 + s_geo003 + s_geo004 + s_geo005 + s_wire008 + s_wire010
-    return pd.Series(s, index=df.index).clip(0, 1)
+    details = pd.DataFrame({
+        "GEO-001": s_geo001,
+        "GEO-002": s_geo002,
+        "GEO-003": s_geo003,
+        "GEO-004": s_geo004,
+        "GEO-005": s_geo005,
+        "WIRE-008": s_wire008,
+        "WIRE-010": s_wire010
+    }, index=df.index)
+    return pd.Series(s, index=df.index).clip(0, 1), details
 
 
-def rules_human_trafficking(df: pd.DataFrame) -> pd.Series:
+def rules_human_trafficking(df: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     """
     HT-SEX-01:  Rounded retail/gift card purchases
     HT-SEX-02:  High-value convenience store purchases
@@ -750,21 +788,41 @@ def rules_human_trafficking(df: pd.DataFrame) -> pd.Series:
     s_14 = np.where(max_eft_emt >= 8, 0.18, np.where(max_eft_emt >= 4, 0.10, 0.0))
 
     s = s_01 + s_02 + s_03 + s_04 + s_05 + s_06 + s_07 + s_08 + s_10 + s_12 + s_13 + s_14
-    return pd.Series(s, index=df.index).clip(0, 1)
+    details = pd.DataFrame({
+        "HT-SEX-01": s_01,
+        "HT-SEX-02": s_02,
+        "HT-SEX-03": s_03,
+        "HT-SEX-04": s_04,
+        "HT-SEX-05": s_05,
+        "HT-SEX-06": s_06,
+        "HT-SEX-07": s_07,
+        "HT-SEX-08": s_08,
+        "HT-SEX-10": s_10,
+        "HT-SEX-12": s_12,
+        "HT-SEX-13": s_13,
+        "HT-SEX-14": s_14
+    }, index=df.index)
+    return pd.Series(s, index=df.index).clip(0, 1), details
 
 
 def apply_rule_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute all per-typology rule scores for every customer simultaneously.
     Returns a DataFrame with one score column per typology, a weighted
-    combined score, and a rules_triggered count.
+    combined score, rules_triggered count, and an indicator trace.
     """
+    s_struct, d_struct = rules_structuring_layering(df)
+    s_behav, d_behav   = rules_behavioural_profile(df)
+    s_trade, d_trade   = rules_trade_shell(df)
+    s_geo, d_geo       = rules_cross_border_geo(df)
+    s_ht, d_ht         = rules_human_trafficking(df)
+
     scores = {
-        "rule_structuring_layering": rules_structuring_layering(df),
-        "rule_behavioural_profile":  rules_behavioural_profile(df),
-        "rule_trade_shell":          rules_trade_shell(df),
-        "rule_cross_border_geo":     rules_cross_border_geo(df),
-        "rule_human_trafficking":    rules_human_trafficking(df),
+        "rule_structuring_layering": s_struct,
+        "rule_behavioural_profile":  s_behav,
+        "rule_trade_shell":          s_trade,
+        "rule_cross_border_geo":     s_geo,
+        "rule_human_trafficking":    s_ht,
     }
     out = pd.DataFrame(scores, index=df.index)
 
@@ -789,6 +847,64 @@ def apply_rule_scores(df: pd.DataFrame) -> pd.DataFrame:
             "human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
         })
     )
+
+    # ── Indicator Trace Compilation ──────────────────────────────────────────
+    # Assign labels to columns to track their parent typology
+    d_struct.columns = [f"Struct::{c}" for c in d_struct.columns]
+    d_behav.columns  = [f"Behav::{c}"  for c in d_behav.columns]
+    d_trade.columns  = [f"Trade::{c}"  for c in d_trade.columns]
+    d_geo.columns    = [f"Geo::{c}"    for c in d_geo.columns]
+    d_ht.columns     = [f"HT::{c}"     for c in d_ht.columns]
+
+    all_details = pd.concat([d_struct, d_behav, d_trade, d_geo, d_ht], axis=1)
+
+    typology_w_lookup = {
+        "Struct": TYPOLOGY_WEIGHTS["if_score_structuring_layering"],
+        "Behav":  TYPOLOGY_WEIGHTS["if_score_behavioural_profile"],
+        "Trade":  TYPOLOGY_WEIGHTS["if_score_trade_shell"],
+        "Geo":    TYPOLOGY_WEIGHTS["if_score_cross_border_geo"],
+        "HT":     TYPOLOGY_WEIGHTS["if_score_human_trafficking"]
+    }
+
+    def format_trace(row):
+        indicators = []
+        for col_name, raw_val in row.items():
+            if raw_val <= 0:
+                continue
+            
+            typology, ind_id = col_name.split("::")
+            typology_weight = typology_w_lookup[typology]
+            
+            # Global Impact filters out noise where indicators add negligible points
+            impact = raw_val * typology_weight
+            
+            if impact < 0.015:
+                continue
+                
+            if raw_val > 0.20:    sev = "H"
+            elif raw_val >= 0.10: sev = "M"
+            else:                 sev = "L"
+            
+            indicators.append((impact, typology, ind_id, sev))
+            
+        # Keep top 5 global indicators per customer
+        indicators.sort(key=lambda x: x[0], reverse=True)
+        top_inds = indicators[:5]
+        
+        if not top_inds:
+            return ""
+            
+        grouped = {}
+        for imp, typ, ind, sev in top_inds:
+            grouped.setdefault(typ, []).append(f"{ind}({sev})")
+            
+        parts = []
+        for typ, lst in grouped.items():
+            parts.append(f"{typ}: {', '.join(lst)}")
+        return " | ".join(parts)
+
+    out["rule_indicator_trace"] = all_details.apply(format_trace, axis=1)
+
     return out
 
 
@@ -1105,7 +1221,7 @@ def main():
         ["customer_id", "final_hybrid_score", "hybrid_risk_category",
          "cluster_primary_typology", "primary_rule_typology",
          "if_score_weighted", "if_score_max", "rule_score_weighted",
-         "rules_triggered", "cluster_risk_tier"]
+         "rules_triggered", "cluster_risk_tier", "rule_indicator_trace"]
         + avail_if_cols + rule_cols
     )
     hybrid[[c for c in evidence_cols if c in hybrid.columns]]\
