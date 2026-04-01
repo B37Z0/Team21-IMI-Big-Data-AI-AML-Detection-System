@@ -2,6 +2,7 @@
 # Install with: pip install -r requirements.txt
 
 pandas
+numpy
 openpyxl                 # Required for pd.read_excel (.xlsx support)
 huggingface-hub
 google-generativeai      # Gemini backend (MODEL_BACKEND=gemini)

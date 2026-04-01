@@ -14,17 +14,48 @@ defined in AML-indicator-DB.xlsx:
 Available channels: abm, card, cheque, eft, emt, westernunion, wire
 
 Usage:
-    python 01_feature_engineering.py --base_dir /path/to/AML_Competition
+    python 01_feature_engineering.py --hf_repo scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai
 """
 
 import argparse
+import os
+import sys
+import tempfile
 import warnings
 from pathlib import Path
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
+from huggingface_hub import HfApi, hf_hub_download
 
 warnings.filterwarnings("ignore")
+load_dotenv()
+sys.stdout.reconfigure(line_buffering=True)
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face dataset configuration
+# ---------------------------------------------------------------------------
+
+DEFAULT_HF_DATASET_REPO = "scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai"
+DEFAULT_HF_OUTPUT_PATH = "outputs/customer_features_enhanced.csv"
+
+HF_INPUT_FILES = {
+    "abm": "abm.csv",
+    "card": "card.csv",
+    "cheque": "cheque.csv",
+    "eft": "eft.csv",
+    "emt": "emt.csv",
+    "westernunion": "westernunion.csv",
+    "wire": "wire.csv",
+    "kyc_individual": "kyc_individual.csv",
+    "kyc_smallbusiness": "kyc_smallbusiness.csv",
+    "kyc_occupation_codes": "kyc_occupation_codes.csv",
+    "kyc_industry_codes": "kyc_industry_codes.csv",
+    "labels": "labels.csv",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +126,29 @@ def safe_quantile(series: pd.Series, q: float) -> float:
     return float(v) if (v is not None and not np.isnan(v) and v > 0) else 1.0
 
 
-def load_transactions(data_dir: Path) -> pd.DataFrame:
+def normalize_hf_repo_id(repo: str) -> str:
+    """Accept either a repo_id or a full HF dataset URL and return repo_id."""
+    repo = (repo or "").strip()
+    if not repo:
+        return DEFAULT_HF_DATASET_REPO
+    if repo.startswith("https://") or repo.startswith("http://"):
+        parts = [p for p in urlparse(repo).path.strip("/").split("/") if p]
+        if len(parts) >= 3 and parts[0] == "datasets":
+            return "/".join(parts[1:3])
+    return repo
+
+
+def download_hf_csv(repo_id: str, token: str | None, path_in_repo: str) -> pd.DataFrame:
+    local_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=path_in_repo,
+        repo_type="dataset",
+        token=token,
+    )
+    return pd.read_csv(local_path)
+
+
+def load_transactions(repo_id: str, token: str | None) -> pd.DataFrame:
     """Load all seven channel CSVs and return a unified transaction table.
 
     Card has extra columns (merchant_category, ecommerce_ind, country, province, city)
@@ -113,11 +166,11 @@ def load_transactions(data_dir: Path) -> pd.DataFrame:
     }
     frames = []
     for channel, fname in channel_files.items():
-        fpath = data_dir / fname
-        if not fpath.exists():
-            print(f"   SKIP {channel}: {fname} not found")
+        try:
+            df = download_hf_csv(repo_id, token, fname)
+        except Exception as exc:
+            print(f"   SKIP {channel}: {fname} not found in HF repo ({exc})")
             continue
-        df = pd.read_csv(fpath)
         df["channel"] = channel
         if "amount_cad" not in df.columns and "amount" in df.columns:
             df = df.rename(columns={"amount": "amount_cad"})
@@ -129,6 +182,9 @@ def load_transactions(data_dir: Path) -> pd.DataFrame:
                 df[col] = np.nan
         frames.append(df)
         print(f"   {channel}: {len(df):,} rows")
+
+    if not frames:
+        raise FileNotFoundError("No transaction CSVs could be downloaded from the Hugging Face dataset.")
 
     txn = pd.concat(frames, ignore_index=True)
     txn["transaction_datetime"] = pd.to_datetime(txn["transaction_datetime"], errors="coerce")
@@ -808,26 +864,45 @@ def build_customer_features(txn: pd.DataFrame, df_kyc_ind, df_kyc_bus) -> pd.Dat
 
 def main():
     parser = argparse.ArgumentParser(description="AML Feature Engineering")
-    parser.add_argument("--base_dir", type=str, default="/content/gdrive/MyDrive/AML_Competition")
+    parser.add_argument(
+        "--hf_repo",
+        type=str,
+        default=os.getenv("HF_DATASET_REPO", DEFAULT_HF_DATASET_REPO),
+        help="Hugging Face dataset repo_id or dataset URL.",
+    )
+    parser.add_argument(
+        "--hf_token",
+        type=str,
+        default=os.getenv("HF_TOKEN"),
+        help="Hugging Face token for private datasets.",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default=DEFAULT_HF_OUTPUT_PATH,
+        help="Path inside the HF dataset repo where engineered features will be uploaded.",
+    )
     args = parser.parse_args()
 
-    base_dir   = Path(args.base_dir)
-    data_dir   = base_dir / "data"
-    output_dir = base_dir / "features"
-    output_dir.mkdir(exist_ok=True, parents=True)
+    hf_repo = normalize_hf_repo_id(args.hf_repo)
+    hf_token = args.hf_token
+
+    if not hf_token:
+        raise ValueError("HF token is required. Set HF_TOKEN in .env or pass --hf_token.")
 
     print("=" * 70)
     print("AML FEATURE ENGINEERING — 5 Knowledge Library Typologies")
     print("=" * 70)
+    print(f"HF dataset repo: {hf_repo}")
 
-    df_kyc_ind    = pd.read_csv(data_dir / "kyc_individual.csv")
-    df_kyc_bus    = pd.read_csv(data_dir / "kyc_smallbusiness.csv")
-    df_occupation = pd.read_csv(data_dir / "kyc_occupation_codes.csv")
-    df_industry   = pd.read_csv(data_dir / "kyc_industry_codes.csv")
-    df_labels     = pd.read_csv(data_dir / "labels.csv")
+    df_kyc_ind = download_hf_csv(hf_repo, hf_token, HF_INPUT_FILES["kyc_individual"])
+    df_kyc_bus = download_hf_csv(hf_repo, hf_token, HF_INPUT_FILES["kyc_smallbusiness"])
+    df_occupation = download_hf_csv(hf_repo, hf_token, HF_INPUT_FILES["kyc_occupation_codes"])
+    df_industry = download_hf_csv(hf_repo, hf_token, HF_INPUT_FILES["kyc_industry_codes"])
+    df_labels = download_hf_csv(hf_repo, hf_token, HF_INPUT_FILES["labels"])
 
     print("\nLoading transactions...")
-    txn = load_transactions(data_dir)
+    txn = load_transactions(hf_repo, hf_token)
 
     print("\nAttaching KYC risk tiers...")
     df_kyc_ind, df_kyc_bus = attach_kyc_risk_tiers(df_kyc_ind, df_kyc_bus, df_occupation, df_industry)
@@ -844,8 +919,18 @@ def main():
     if dupes:
         df = df.drop_duplicates(subset="customer_id", keep="first")
 
-    out_main = output_dir / "customer_features_enhanced.csv"
-    df.to_csv(out_main, index=False)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp_file:
+        out_main = Path(tmp_file.name)
+        df.to_csv(out_main, index=False)
+
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj=str(out_main),
+        path_in_repo=args.output_path,
+        repo_id=hf_repo,
+        repo_type="dataset",
+        token=hf_token,
+    )
 
     print("\n" + "=" * 70)
     print("FEATURE ENGINEERING COMPLETE")
@@ -857,7 +942,7 @@ def main():
     for t in ["structuring_layering_risk", "behavioural_profile_risk",
               "trade_shell_risk", "cross_border_geo_risk", "human_trafficking_risk"]:
         print(f"      {t:<35}  mean={df[t].mean():.3f}  p95={df[t].quantile(0.95):.3f}")
-    print(f"\n   Output: {out_main}")
+    print(f"\n   Output uploaded to HF: {hf_repo}/{args.output_path}")
 
 
 if __name__ == "__main__":
