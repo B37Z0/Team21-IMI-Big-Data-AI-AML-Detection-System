@@ -851,17 +851,28 @@ def apply_rule_scores(df: pd.DataFrame) -> pd.DataFrame:
     }
     out["rule_score_weighted"] = sum(out[col] * w for col, w in weight_map.items())
     out["rules_triggered"]     = (out[list(scores.keys())] > 0).sum(axis=1)
+
+    # primary_rule_typology — set here as a raw-rule fallback only.
+    # This will be overwritten in main() once dynamic (IF × rule) scores are
+    # available, which is the correct basis for this label.
+    #
+    # Why the raw-rule idxmax is insufficient:
+    #   High-risk customers frequently max out multiple rule typologies at 1.0
+    #   simultaneously. idxmax on tied columns returns whichever comes first in
+    #   column order — an arbitrary, alphabetically-driven result. The dynamic
+    #   product (IF_score × rule_score) is never identically tied because the IF
+    #   model produces continuous scores, so its argmax always selects the typology
+    #   where both models agree most strongly, not just where rules happened to fire.
+    _rule_key_map = {
+        "rule_structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
+        "rule_behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
+        "rule_trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
+        "rule_cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
+        "rule_human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
+    }
     out["primary_rule_typology"] = (
-        out[list(scores.keys())].idxmax(axis=1)
-        .str.replace("rule_", "")
-        .map({
-            "structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
-            "behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
-            "trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
-            "cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
-            "human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
-        })
-    )
+        out[list(scores.keys())].idxmax(axis=1).map(_rule_key_map)
+    )  # Overwritten by dynamic-score argmax in main().
 
     # ── Indicator Trace Compilation ──────────────────────────────────────────
     # Assign labels to columns to track their parent typology
@@ -1205,6 +1216,35 @@ def main():
         name = dyn_col.replace("dynamic_", "")
         print(f"    {name:<30}: mean={pre_hybrid[dyn_col].mean():.3f}  "
               f"max={pre_hybrid[dyn_col].max():.3f}")
+
+    # ── Recompute primary_rule_typology from dynamic (IF x rule) scores ──────
+    #
+    # Using dynamic argmax (not raw rule argmax) because:
+    #   1. Raw rule scores cap at 1.0 and tie across typologies for high-risk
+    #      customers, making raw idxmax order-dependent (column position).
+    #   2. The dynamic product (IF_score x rule_score) uses continuous IF values,
+    #      so ties are practically impossible — argmax always picks the typology
+    #      with the strongest corroborated signal from both independent models.
+    #   3. This makes primary_rule_typology semantically consistent with Pillar 1
+    #      of the ensemble, which is also driven by the dynamic product sum.
+    _dyn_col_to_label = {
+        "dynamic_structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
+        "dynamic_behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
+        "dynamic_trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
+        "dynamic_cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
+        "dynamic_human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
+    }
+    _avail_dyn_cols = [c for c in _dyn_col_to_label if c in pre_hybrid.columns]
+    if _avail_dyn_cols:
+        pre_hybrid["primary_rule_typology"] = (
+            pre_hybrid[_avail_dyn_cols]
+            .idxmax(axis=1)
+            .map(_dyn_col_to_label)
+        )
+        print(f"\n  primary_rule_typology reassigned via dynamic-score argmax (IF x rule).")
+        print(f"  Distribution across all customers:")
+        print(pre_hybrid["primary_rule_typology"].value_counts().to_string())
+
 
     # \u2500\u2500 Layer 3: KMeans \u2014 Behavioral Peer-Grouping on Raw IF Scores \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     # Purpose: Group customers into behavioral archetypes using the 5 raw IF
