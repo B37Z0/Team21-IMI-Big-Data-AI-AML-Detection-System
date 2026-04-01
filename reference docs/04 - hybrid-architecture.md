@@ -23,7 +23,7 @@ This combination is greater than the sum of its parts. The final Dynamic Pillar 
 
 ---
 
-## Pillar 2: Coverage-Based Fallback (Zero-Day Anomalies)
+## Pillar 2: Coverage-Based Fallback ('Zero-Day' Anomalies)
 **Weight: 20%**
 
 Dynamic scoring on its own is flawed (we found this out the hard way) - it is entirely dependent on the rule system. If no rules are triggered, the dynamic score is 0, even if the Isolation Forest detects highly anomalous behavior. Hence, this pillar should catch hypothetically sophisticated bad actors that evade all internal rule thresholds but behave highly suspiciously. In less flattering terms, it is a fallback. 
@@ -37,7 +37,7 @@ Fallback Score = (1.0 - coverage) × IF_Score_Weighted
 
 ---
 
-## Pillar 3: KMeans Behavioral Peer-Grouping
+## Pillar 3: KMeans Behavioral Peer-Clustering
 **Weight: 30%**
 
 This pillar provides "relative severity". KMeans allows us to group similar customers into behavioral cohorts, determining how severely anomalous a customer is compared strictly to people who act like them. IF score distributions are heavily right-skewed across 61K customers — most customers score near zero with a long anomalous tail. Feeding raw scores into K-means would cause cluster geometry to degenerate into one large low-risk blob. RobustScaler flattens this distribution so K-means finds meaningful substructure across the full population rather than just identifying extreme outliers

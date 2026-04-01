@@ -1161,7 +1161,7 @@ def main():
     print(f"  Customers with any rule triggered: "
           f"{(df_features['rules_triggered'] > 0).sum():,}")
 
-    # \u2500\u2500 Dynamic Scores: IF \u00d7 Rule per typology \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Dynamic Scores: IF Rule per typology
     # Multiplicative gate: each typology's rule score is amplified by how
     # anomalous the IF model found that typology to be for this customer.
     # If either model sees no signal, the dynamic score is near zero.
@@ -1198,7 +1198,7 @@ def main():
             pre_hybrid[dyn_col] = pre_hybrid[if_col] * pre_hybrid[rule_col]
             dynamic_cols.append(dyn_col)
 
-    # Sum of dynamic scores \u2014 peaks at 5.0 if all typologies fully agree
+    # Sum of dynamic scores peaks at 5.0 if all typologies fully agree
     pre_hybrid["dynamic_score_raw"] = pre_hybrid[dynamic_cols].sum(axis=1)
 
     # Normalise dynamic score to [0, 1] across the population
@@ -1246,10 +1246,10 @@ def main():
         print(pre_hybrid["primary_rule_typology"].value_counts().to_string())
 
 
-    # \u2500\u2500 Layer 3: KMeans \u2014 Behavioral Peer-Grouping on Raw IF Scores \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Layer 3: KMeans - Behavioral Peer-Grouping on Raw IF Scores
     # Purpose: Group customers into behavioral archetypes using the 5 raw IF
     # anomaly scores. Clusters are formed purely from the ML model's view of
-    # each customer's behavioral shape \u2014 independent of the rule engine.
+    # each customer's behavioral shape - independent of the rule engine.
     # The within-cluster percentile (derived from dynamic_score_raw) then
     # measures relative severity against behavioral peers, not the full
     # population. This is the core insight: a customer who is the most
