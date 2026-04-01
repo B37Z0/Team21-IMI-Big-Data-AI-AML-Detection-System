@@ -22,53 +22,43 @@ Layer 2 — Rule-Based Hard Flags  (weight: 0.30)
   row-by-row. Rules fire independently of the statistical model, ensuring
   regulatory thresholds are always reflected in the final score.
 
-Layer 3 — KMeans Cluster Risk Tier  (weight: 0.10)
-  Clusters customers in the 5D RULE score space (not IF space). Rule scores
-  are grounded in FINTRAC/FinCEN regulatory thresholds and have low correlation
-  with IF scores (r≈0.34), so clustering here groups customers by which
-  regulatory patterns they co-trigger — independent group-level evidence.
-  Continuous cluster score [0,1] = base tier × within-cluster distance from
-  centroid, so outliers within a high-risk regulatory cohort score higher
-  than typical members. k auto-selected by silhouette score.
+Layer 3 — KMeans Cluster Risk Tier  (weight: 0.15)
+  Clusters customers in the 5D DYNAMIC score space (IF × Rule per typology).
+  Dynamic scores are the product of each typology's IF score and its rule
+  score — zero if either model sees no signal, high only when both agree.
+  This clusters customers by corroborated risk patterns, not raw flags alone.
+  Continuous cluster score [0,1] = base tier × within-cluster centroid distance.
+  k auto-selected by silhouette score.
 
-Ensemble:
-  final_score = 0.60 * if_weighted + 0.30 * rule_weighted + 0.10 * cluster_score
+Ensemble (Asymmetric Gating — Option C):
+  dynamic_i    = IF_score_i × Rule_score_i          (per typology, 5 values)
+  norm_dynamic = min-max normalised sum of dynamic_i across population
+  final_score  = 0.50 * IF_weighted                 (zero-day anomaly detection)
+               + 0.35 * norm_dynamic                (corroboration amplifier)
+               + 0.15 * cluster_score               (cohort-level evidence)
   Normalised to [0,1], ranked. Top 1% flagged as predicted suspicious.
 
 Usage:
-    python 03_hybrid_model.py --hf_repo scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai
+    python 03_hybrid_model.py --base_dir /path/to/AML_Competition
 """
 
 import argparse
-import os
-import sys
-import tempfile
 import warnings
 from pathlib import Path
-from urllib.parse import urlparse
 
 import joblib
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-from huggingface_hub import HfApi, hf_hub_download
 from sklearn.cluster import KMeans
 from sklearn.metrics import roc_auc_score, silhouette_score
 
 warnings.filterwarnings("ignore")
 np.random.seed(42)
-load_dotenv()
-sys.stdout.reconfigure(line_buffering=True)
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-DEFAULT_HF_DATASET_REPO = "scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai"
-DEFAULT_HF_FEATURES_PATH = "outputs/customer_features_enhanced.csv"
-DEFAULT_HF_ISO_RESULTS_PATH = "outputs/isolation_forest_results.csv"
-DEFAULT_HF_OUTPUT_DIR = "outputs"
 
 IF_SCORE_COLS = [
     "if_score_structuring_layering",
@@ -994,11 +984,17 @@ def profile_clusters(df: pd.DataFrame, rule_cols: list) -> pd.DataFrame:
 
     # Map rule column names to display labels
     rule_label_map = {
-        "rule_structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
-        "rule_behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
-        "rule_trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
-        "rule_cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
-        "rule_human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
+        "rule_structuring_layering":  TYPOLOGY_LABELS["if_score_structuring_layering"],
+        "rule_behavioural_profile":   TYPOLOGY_LABELS["if_score_behavioural_profile"],
+        "rule_trade_shell":           TYPOLOGY_LABELS["if_score_trade_shell"],
+        "rule_cross_border_geo":      TYPOLOGY_LABELS["if_score_cross_border_geo"],
+        "rule_human_trafficking":     TYPOLOGY_LABELS["if_score_human_trafficking"],
+        # dynamic_ prefix variants (used when clustering on IF×Rule scores)
+        "dynamic_structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
+        "dynamic_behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
+        "dynamic_trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
+        "dynamic_cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
+        "dynamic_human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
     }
 
     def assign_label(row):
@@ -1013,7 +1009,7 @@ def profile_clusters(df: pd.DataFrame, rule_cols: list) -> pd.DataFrame:
     summary = pd.DataFrame({"primary_typology": primary, "risk_tier": risk_tier})
 
     k = len(profile)
-    short = [c.replace("rule_", "")[:14] for c in rule_cols]
+    short = [c.replace("rule_", "").replace("dynamic_", "")[:14] for c in rule_cols]
     print(f"\n  Cluster profiles (k={k}, mean rule scores):")
     print("  {:>3}  {:>7}  {}  {:>5}  Label".format(
         "Cls", "n", "  ".join(f"{h:>14}" for h in short), "Tier"))
@@ -1032,38 +1028,6 @@ def profile_clusters(df: pd.DataFrame, rule_cols: list) -> pd.DataFrame:
 # Helper
 # ---------------------------------------------------------------------------
 
-def normalize_hf_repo_id(repo: str) -> str:
-    """Accept either a repo_id or a full HF dataset URL and return repo_id."""
-    repo = (repo or "").strip()
-    if not repo:
-        return DEFAULT_HF_DATASET_REPO
-    if repo.startswith("https://") or repo.startswith("http://"):
-        parts = [p for p in urlparse(repo).path.strip("/").split("/") if p]
-        if len(parts) >= 3 and parts[0] == "datasets":
-            return "/".join(parts[1:3])
-    return repo
-
-
-def download_hf_csv(repo_id: str, token: str | None, path_in_repo: str) -> pd.DataFrame:
-    local_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=path_in_repo,
-        repo_type="dataset",
-        token=token,
-    )
-    return pd.read_csv(local_path)
-
-
-def upload_hf_file(api: HfApi, repo_id: str, token: str | None, local_path: Path, path_in_repo: str) -> None:
-    api.upload_file(
-        path_or_fileobj=str(local_path),
-        path_in_repo=path_in_repo,
-        repo_id=repo_id,
-        repo_type="dataset",
-        token=token,
-    )
-
-
 def risk_category(score: float) -> str:
     if score >= 0.80: return "Very High"
     if score >= 0.60: return "High"
@@ -1078,72 +1042,40 @@ def risk_category(score: float) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="AML Hybrid Model")
-    parser.add_argument(
-        "--hf_repo",
-        type=str,
-        default=os.getenv("HF_DATASET_REPO", DEFAULT_HF_DATASET_REPO),
-        help="Hugging Face dataset repo_id or dataset URL.",
-    )
-    parser.add_argument(
-        "--hf_token",
-        type=str,
-        default=os.getenv("HF_TOKEN"),
-        help="Hugging Face token for private datasets.",
-    )
-    parser.add_argument(
-        "--features_path",
-        type=str,
-        default=DEFAULT_HF_FEATURES_PATH,
-        help="HF path for engineered customer features CSV.",
-    )
-    parser.add_argument(
-        "--iso_results_path",
-        type=str,
-        default=DEFAULT_HF_ISO_RESULTS_PATH,
-        help="HF path for isolation forest results CSV.",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default=DEFAULT_HF_OUTPUT_DIR,
-        help="HF folder where hybrid model outputs will be uploaded.",
-    )
+    parser.add_argument("--base_dir", type=str, default="/content/gdrive/MyDrive/AML_Competition")
     parser.add_argument("--k_min",   type=int, default=3,
                         help="Min k for silhouette search (default: 3)")
     parser.add_argument("--k_max",   type=int, default=8,
                         help="Max k for silhouette search (default: 8)")
     parser.add_argument("--k",       type=int, default=0,
                         help="Fix k directly (0 = auto-select, default)")
-    parser.add_argument("--w_if",       type=float, default=0.60,
-                        help="Weight for IF weighted score (default: 0.60)")
-    parser.add_argument("--w_cluster",  type=float, default=0.10,
-                        help="Weight for rule-space cluster score (default: 0.10)")
-    parser.add_argument("--w_rule",     type=float, default=0.30,
-                        help="Weight for rule-based flag score (default: 0.30)")
+    parser.add_argument("--w_if",      type=float, default=0.50,
+                        help="Weight for IF weighted score (default: 0.50)")
+    parser.add_argument("--w_cluster", type=float, default=0.15,
+                        help="Weight for dynamic-space cluster score (default: 0.15)")
+    parser.add_argument("--w_rule",    type=float, default=0.35,
+                        help="Weight for normalised dynamic score (default: 0.35)")
     args = parser.parse_args()
 
-    hf_repo = normalize_hf_repo_id(args.hf_repo)
-    hf_token = args.hf_token
-    output_dir = args.output_dir.strip("/").strip()
-
-    if not hf_token:
-        raise ValueError("HF token is required. Set HF_TOKEN in .env or pass --hf_token.")
+    base_dir  = Path(args.base_dir)
+    feat_dir  = base_dir / "features"
+    model_dir = base_dir / "models"
+    model_dir.mkdir(exist_ok=True, parents=True)
 
     print("=" * 70)
-    print("HYBRID AML MODEL — IF + Rules + KMeans (rule-space clusters)")
+    print("HYBRID AML MODEL — IF + Rules + KMeans (Asymmetric Gating, Option C)")
     print("5 Typologies — AML-indicator-DB.xlsx")
     print("=" * 70)
-    print(f"HF dataset repo:    {hf_repo}")
-    print(f"\nEnsemble weights:  IF={args.w_if}  |  Rules={args.w_rule}  |  Cluster={args.w_cluster}")
-    print(f"KMeans input:      Rule scores (5D) — independent of IF layer")
+    print(f"\nEnsemble weights:  IF={args.w_if}  |  Dynamic(IF×Rule)={args.w_rule}  |  Cluster={args.w_cluster}")
+    print(f"KMeans input:      Dynamic scores (IF×Rule per typology, 5D)")
     tw = {k.replace("if_score_", ""): v for k, v in TYPOLOGY_WEIGHTS.items()}
-    print(f"Typology weights:  {tw}")
-    print("(Weights grounded in IF validation ROC-AUC — not tuned on labels)")
+    print(f"Typology weights:  {tw} (used for IF weighted score only)")
+    print("(Asymmetric gating: IF catches zero-days, dynamic term amplifies corroborated risk)")
 
     # ── Load ───────────────────────────────────────────────────────────────
     print("\nLoading data...")
-    iso_results = download_hf_csv(hf_repo, hf_token, args.iso_results_path)
-    df_features = download_hf_csv(hf_repo, hf_token, args.features_path)
+    iso_results = pd.read_csv(model_dir / "isolation_forest_results.csv")
+    df_features = pd.read_csv(feat_dir  / "customer_features_enhanced.csv")
     print(f"   IF results:     {len(iso_results):,} customers")
     print(f"   Feature matrix: {df_features.shape}")
 
@@ -1185,19 +1117,73 @@ def main():
     print(f"  Customers with any rule triggered: "
           f"{(df_features['rules_triggered'] > 0).sum():,}")
 
-    # ── Layer 3: KMeans clustering on RULE score space ────────────────────
+    # ── Dynamic Scores: IF × Rule per typology ────────────────────────────
+    # Multiplicative gate: each typology's rule score is amplified by how
+    # anomalous the IF model found that typology to be for this customer.
+    # If either model sees no signal, the dynamic score is near zero.
+    # Only where both agree does the score become meaningfully large.
     print("\n" + "-" * 70)
-    print("Layer 3 — KMeans clustering on typology RULE scores...")
-    print("  (Rationale: rule scores are grounded in FINTRAC/FinCEN regulatory")
-    print("   thresholds and have low correlation with IF scores (r≈0.34),")
-    print("   so clustering in rule space captures independent group-level")
-    print("   evidence — customers who co-trigger the same regulatory patterns.)")
+    print("Computing dynamic scores (IF × Rule per typology)...")
     print("-" * 70)
 
-    # Rule score columns are already on df_features from Layer 2
-    df_cluster = df_features[["customer_id"] + rule_cols].copy()
-    df_cluster[rule_cols] = df_cluster[rule_cols].fillna(0)
-    X_cluster = df_cluster[rule_cols].values
+    typology_pairs = [
+        ("if_score_structuring_layering", "rule_structuring_layering"),
+        ("if_score_behavioural_profile",  "rule_behavioural_profile"),
+        ("if_score_trade_shell",          "rule_trade_shell"),
+        ("if_score_cross_border_geo",     "rule_cross_border_geo"),
+        ("if_score_human_trafficking",    "rule_human_trafficking"),
+    ]
+
+    # Build a merged frame to compute dynamic scores before KMeans
+    iso_results["if_score_weighted"] = sum(
+        iso_results[col] * TYPOLOGY_WEIGHTS[col]
+        for col in avail_if_cols if col in TYPOLOGY_WEIGHTS
+    )
+    merge_rules = df_features[["customer_id", "rule_score_weighted",
+                                "rules_triggered", "primary_rule_typology"] + rule_cols]
+    pre_hybrid = (
+        iso_results[["customer_id", "if_score_weighted", "if_score_max",
+                      "if_score_mean", "primary_typology", "actual_label"] + avail_if_cols]
+        .merge(merge_rules, on="customer_id", how="inner")
+    )
+
+    dynamic_cols = []
+    for if_col, rule_col in typology_pairs:
+        if if_col in pre_hybrid.columns and rule_col in pre_hybrid.columns:
+            dyn_col = rule_col.replace("rule_", "dynamic_")
+            pre_hybrid[dyn_col] = pre_hybrid[if_col] * pre_hybrid[rule_col]
+            dynamic_cols.append(dyn_col)
+
+    # Sum of dynamic scores — peaks at 5.0 if all typologies fully agree
+    pre_hybrid["dynamic_score_raw"] = pre_hybrid[dynamic_cols].sum(axis=1)
+
+    # Normalise dynamic score to [0, 1] across the population
+    dyn_min = pre_hybrid["dynamic_score_raw"].min()
+    dyn_max = pre_hybrid["dynamic_score_raw"].max()
+    pre_hybrid["dynamic_score_norm"] = (
+        (pre_hybrid["dynamic_score_raw"] - dyn_min) / (dyn_max - dyn_min + 1e-9)
+    )
+
+    print(f"  Dynamic score (IF×Rule sum) — "
+          f"mean={pre_hybrid['dynamic_score_raw'].mean():.3f}  "
+          f"p95={pre_hybrid['dynamic_score_raw'].quantile(0.95):.3f}  "
+          f"max={pre_hybrid['dynamic_score_raw'].max():.3f}")
+    for dyn_col in dynamic_cols:
+        name = dyn_col.replace("dynamic_", "")
+        print(f"    {name:<30}: mean={pre_hybrid[dyn_col].mean():.3f}  "
+              f"max={pre_hybrid[dyn_col].max():.3f}")
+
+    # ── Layer 3: KMeans clustering on DYNAMIC score space ─────────────────
+    print("\n" + "-" * 70)
+    print("Layer 3 — KMeans clustering on dynamic (IF × Rule) scores...")
+    print("  (Clusters form around customers where both models corroborate.")
+    print("   Pure IF anomalies and pure rule triggers land in separate cohorts,")
+    print("   isolating the highest-confidence suspicious patterns.)")
+    print("-" * 70)
+
+    df_cluster = pre_hybrid[["customer_id"] + dynamic_cols].copy()
+    df_cluster[dynamic_cols] = df_cluster[dynamic_cols].fillna(0)
+    X_cluster  = df_cluster[dynamic_cols].values
 
     k_range = range(args.k_min, args.k_max + 1)
     best_k  = args.k if args.k > 0 else select_k(X_cluster, k_range)
@@ -1207,13 +1193,11 @@ def main():
     kmeans.fit(X_cluster)
     df_cluster["cluster"] = kmeans.labels_
 
-    cluster_summary = profile_clusters(df_cluster, rule_cols)
+    cluster_summary = profile_clusters(df_cluster, dynamic_cols)
     df_cluster["cluster_primary_typology"] = df_cluster["cluster"].map(cluster_summary["primary_typology"])
     df_cluster["cluster_risk_tier"]        = df_cluster["cluster"].map(cluster_summary["risk_tier"])
 
-    # Continuous cluster score: base tier × within-cluster distance from centroid.
-    # Customers who are outliers within their rule-based cohort (far from centroid)
-    # score higher than typical members — adds within-cluster differentiation.
+    # Continuous cluster score: base tier × normalised within-cluster centroid distance.
     all_distances = kmeans.transform(X_cluster)
     own_dist      = all_distances[np.arange(len(df_cluster)), kmeans.labels_]
     cluster_score = np.zeros(len(df_cluster), dtype=float)
@@ -1226,39 +1210,33 @@ def main():
         cluster_score[mask] = base * (0.5 + 0.5 * norm)
     df_cluster["cluster_score"] = cluster_score
 
-    print(f"\n  Continuous cluster score (rule-space) — "
+    print(f"\n  Continuous cluster score (dynamic-space) — "
           f"mean={cluster_score.mean():.3f}  "
           f"p95={np.percentile(cluster_score, 95):.3f}  "
           f"max={cluster_score.max():.3f}")
 
-    # ── Ensemble fusion ────────────────────────────────────────────────────
+    # ── Ensemble fusion (Option C — Asymmetric Gating) ─────────────────────
     print("\n" + "-" * 70)
-    print("Ensemble fusion...")
+    print("Ensemble fusion (Asymmetric Gating)...")
+    print("  final = 0.50 * IF_weighted  +  0.35 * norm_dynamic  +  0.15 * cluster")
     print("-" * 70)
-
-    # Weighted IF score (Layer 1)
-    iso_results["if_score_weighted"] = sum(
-        iso_results[col] * TYPOLOGY_WEIGHTS[col]
-        for col in avail_if_cols if col in TYPOLOGY_WEIGHTS
-    )
 
     merge_cluster = df_cluster[["customer_id", "cluster",
                                  "cluster_risk_tier", "cluster_score",
                                  "cluster_primary_typology"]]
-    merge_rules   = df_features[["customer_id", "rule_score_weighted",
-                                  "rules_triggered", "primary_rule_typology"] + rule_cols]
 
     hybrid = (
-        iso_results[["customer_id", "if_score_weighted", "if_score_max",
-                      "if_score_mean", "primary_typology", "actual_label"] + avail_if_cols]
+        pre_hybrid
         .merge(merge_cluster, on="customer_id", how="inner")
-        .merge(merge_rules,   on="customer_id", how="inner")
     )
 
-    # cluster_score (continuous, rule-space) replaces the old flat cluster_risk_tier
+    # Asymmetric Gating final score:
+    #   - 0.50 * IF_weighted:    preserves zero-day anomaly catching
+    #   - 0.35 * dynamic_norm:   corroboration amplifier (IF AND Rules agree)
+    #   - 0.15 * cluster_score:  cohort-level evidence from dynamic clusters
     hybrid["final_hybrid_score"] = (
-        hybrid["if_score_weighted"]   * args.w_if   +
-        hybrid["rule_score_weighted"] * args.w_rule +
+        hybrid["if_score_weighted"]   * args.w_if      +
+        hybrid["dynamic_score_norm"]  * args.w_rule    +
         hybrid["cluster_score"]       * args.w_cluster
     )
 
@@ -1271,7 +1249,8 @@ def main():
     hybrid["hybrid_risk_category"] = hybrid["final_hybrid_score"].apply(risk_category)
 
     print(f"\n  Component correlations with final score:")
-    for col in ["if_score_weighted", "rule_score_weighted", "cluster_score", "cluster_risk_tier"]:
+    for col in ["if_score_weighted", "dynamic_score_norm", "cluster_score",
+                "rule_score_weighted", "cluster_risk_tier"]:
         if col in hybrid.columns:
             print(f"    {col:<30}: r={hybrid[col].corr(hybrid['final_hybrid_score']):.3f}")
 
@@ -1327,6 +1306,54 @@ def main():
                   f"{row['cluster_risk_tier']:>4.1f}  "
                   f"{str(row['cluster_primary_typology'])[:35]}")
 
+    # ── LLM Indicator Trace (Dynamic Alignment) ───────────────────────────
+    # The rule_indicator_trace is already embedded in hybrid via rule_out.
+    # Here we regenerate it using the dynamic scores (indicator_raw * if_score)
+    # so trace ranking is perfectly aligned with the final hybrid score.
+    # Top 5 indicators by dynamic impact, grouped by typology.
+
+    typology_if_map = {
+        "Struct": "if_score_structuring_layering",
+        "Behav":  "if_score_behavioural_profile",
+        "Trade":  "if_score_trade_shell",
+        "Geo":    "if_score_cross_border_geo",
+        "HT":     "if_score_human_trafficking"
+    }
+
+    ind_cols = [c for c in hybrid.columns if "::" in c]
+
+    if ind_cols:
+        def format_dynamic_trace(row):
+            indicators = []
+            for col_name in ind_cols:
+                raw_val = row[col_name]
+                if pd.isna(raw_val) or raw_val <= 0:
+                    continue
+                typology, ind_id = col_name.split("::")
+                if_col   = typology_if_map.get(typology)
+                if_score = row.get(if_col, 0.0) if if_col else 0.0
+                # Smoking gun override: raw >= 0.40 bypasses the IF multiplier
+                impact = raw_val * 2.0 if raw_val >= 0.40 else raw_val * if_score
+                if impact < 0.015:
+                    continue
+                sev = "H" if raw_val > 0.20 else ("M" if raw_val >= 0.10 else "L")
+                indicators.append((impact, typology, ind_id, sev))
+
+            indicators.sort(key=lambda x: x[0], reverse=True)
+            top = indicators[:5]
+            if not top:
+                return ""
+            grouped = {}
+            for imp, typ, ind, sev in top:
+                grouped.setdefault(typ, []).append(f"{ind}({sev})")
+            return " | ".join(f"{typ}: {', '.join(lst)}" for typ, lst in grouped.items())
+
+        hybrid["rule_indicator_trace"] = hybrid.apply(format_dynamic_trace, axis=1)
+    # else: rule_indicator_trace already present from apply_rule_scores───────────
+    hybrid.to_csv(model_dir / "hybrid_model_results.csv", index=False)
+    hybrid[hybrid["final_hybrid_score"] > 0.60].to_csv(
+        model_dir / "hybrid_model_high_risk.csv", index=False)
+
     results = hybrid[["customer_id", "final_hybrid_score"]].copy()
     results["predicted_label"] = (
         results["final_hybrid_score"] >= results["final_hybrid_score"].quantile(0.99)
@@ -1342,34 +1369,13 @@ def main():
          "rules_triggered", "cluster_risk_tier", "rule_indicator_trace"]
         + avail_if_cols + rule_cols
     )
-    high_risk_evidence = hybrid[[c for c in evidence_cols if c in hybrid.columns]][
-        hybrid["final_hybrid_score"] > 0.60
-    ]
-    hybrid_high_risk = hybrid[hybrid["final_hybrid_score"] > 0.60]
+    hybrid[[c for c in evidence_cols if c in hybrid.columns]]\
+        [hybrid["final_hybrid_score"] > 0.60]\
+        .to_csv(model_dir / "high_risk_evidence.csv", index=False)
 
-    # ── Save ───────────────────────────────────────────────────────────────
-    api = HfApi()
-    output_files = {
-        "hybrid_model_results.csv": hybrid,
-        "hybrid_model_high_risk.csv": hybrid_high_risk,
-        "results.csv": results,
-        "high_risk_evidence.csv": high_risk_evidence,
-        "cluster_typology_profile.csv": cluster_summary,
-    }
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        for filename, frame in output_files.items():
-            local_file = tmp_path / filename
-            frame.to_csv(local_file, index=False)
-            upload_hf_file(api, hf_repo, hf_token, local_file, f"{output_dir}/{filename}")
-
-        kmeans_model_path = tmp_path / "kmeans_model.pkl"
-        kmeans_k_path = tmp_path / "kmeans_k.pkl"
-        joblib.dump(kmeans, kmeans_model_path)
-        joblib.dump(best_k, kmeans_k_path)
-        upload_hf_file(api, hf_repo, hf_token, kmeans_model_path, f"{output_dir}/kmeans_model.pkl")
-        upload_hf_file(api, hf_repo, hf_token, kmeans_k_path, f"{output_dir}/kmeans_k.pkl")
+    joblib.dump(kmeans, model_dir / "kmeans_model.pkl")
+    joblib.dump(best_k, model_dir / "kmeans_k.pkl")
+    cluster_summary.to_csv(model_dir / "cluster_typology_profile.csv")
 
     print("\n" + "=" * 70)
     print("HYBRID MODEL COMPLETE")
@@ -1380,10 +1386,10 @@ def main():
     print(f"   Clusters used:       k={best_k}")
     print(f"   Score range:         [{results['risk_score'].min():.3f}, "
           f"{results['risk_score'].max():.3f}]")
-    print(f"\n   Output files uploaded to HF:")
-    print(f"     {output_dir}/results.csv")
-    print(f"     {output_dir}/hybrid_model_results.csv")
-    print(f"     {output_dir}/high_risk_evidence.csv")
+    print(f"\n   Output files:")
+    print(f"     results.csv                ← competition submission")
+    print(f"     hybrid_model_results.csv   ← full scored table")
+    print(f"     high_risk_evidence.csv     ← investigator evidence")
 
 
 if __name__ == "__main__":
