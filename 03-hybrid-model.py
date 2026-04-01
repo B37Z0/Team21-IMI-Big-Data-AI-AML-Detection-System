@@ -907,6 +907,12 @@ def main():
                         help="Max k for silhouette search (default: 8)")
     parser.add_argument("--k",       type=int, default=0,
                         help="Fix k directly (0 = auto-select, default)")
+    parser.add_argument("--w_if",       type=float, default=0.70,
+                        help="Weight for IF max score")
+    parser.add_argument("--w_cluster",  type=float, default=0.10,
+                        help="Weight for cluster risk tier")
+    parser.add_argument("--w_rule",     type=float, default=0.20,
+                        help="Weight for rule-based flag score")
     args = parser.parse_args()
 
     base_dir  = Path(args.base_dir)
@@ -918,7 +924,7 @@ def main():
     print("HYBRID AML MODEL — IF + Rules + KMeans")
     print("5 Typologies — AML-indicator-DB.xlsx")
     print("=" * 70)
-    print(f"\nEnsemble weights:  IF={W_IF}  |  Rules={W_RULE}  |  Cluster={W_CLUSTER}")
+    print(f"\nEnsemble weights:  IF={args.w_if}  |  Rules={args.w_rule}  |  Cluster={args.w_cluster}")
     tw = {k.replace("if_score_", ""): v for k, v in TYPOLOGY_WEIGHTS.items()}
     print(f"Typology weights:  {tw}")
     print("(Weights grounded in IF validation ROC-AUC — not tuned on labels)")
@@ -1014,9 +1020,9 @@ def main():
     )
 
     hybrid["final_hybrid_score"] = (
-        hybrid["if_score_weighted"]   * W_IF   +
-        hybrid["rule_score_weighted"] * W_RULE +
-        hybrid["cluster_risk_tier"]   * W_CLUSTER
+        hybrid["if_score_weighted"]   * args.w_if   +
+        hybrid["rule_score_weighted"] * args.w_rule +
+        hybrid["cluster_risk_tier"]   * args.w_cluster
     )
 
     # Normalise to [0, 1]
