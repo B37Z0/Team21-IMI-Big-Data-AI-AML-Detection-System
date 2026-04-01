@@ -43,8 +43,9 @@ HF_DATASET_REPO = os.getenv("HF_DATASET_REPO")
 DEFAULT_HF_DATASET_REPO = "scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SECONDS_BETWEEN_CALLS = int(os.getenv("SECONDS_BETWEEN_CALLS", "5"))
-MAX_CUSTOMERS_PER_RUN = int(os.getenv("MAX_CUSTOMERS_PER_RUN", "1"))
+SECONDS_BETWEEN_CALLS = 10
+MAX_CUSTOMERS_PER_RUN = 600
+LLM_BATCH_SIZE = 300
 
 GGUF_LOCAL_PATH = os.getenv("GGUF_LOCAL_PATH", "./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf")
 GGUF_HF_REPO = os.getenv("GGUF_HF_REPO", "bartowski/Llama-3.2-3B-Instruct-GGUF")
@@ -380,6 +381,37 @@ def parse_llm_csv(text: str, expected_ids: list[str]) -> list[dict[str, str]]:
     return [{"customer_id": customer_id, "explanation": parsed_map[customer_id]} for customer_id in expected_ids]
 
 
+def parse_llm_csv_partial(text: str, expected_ids: list[str]) -> list[dict[str, str]]:
+    cleaned = strip_code_fences(text)
+    parsed_map = {}
+
+    if not cleaned:
+        return [{"customer_id": customer_id, "explanation": "unsuccessful"} for customer_id in expected_ids]
+
+    try:
+        reader = csv.reader(io.StringIO(cleaned))
+        rows = [row for row in reader if row]
+    except Exception:
+        return [{"customer_id": customer_id, "explanation": "unsuccessful"} for customer_id in expected_ids]
+
+    if not rows:
+        return [{"customer_id": customer_id, "explanation": "unsuccessful"} for customer_id in expected_ids]
+
+    start_index = 1 if [cell.strip() for cell in rows[0]] == ["customer_id", "explanation"] else 0
+    for row in rows[start_index:]:
+        if len(row) != 2:
+            continue
+        customer_id = row[0].strip()
+        explanation = row[1].replace("\r", " ").replace("\n", " ").strip()
+        if customer_id in expected_ids and explanation:
+            parsed_map[customer_id] = explanation
+
+    return [
+        {"customer_id": customer_id, "explanation": parsed_map.get(customer_id, "unsuccessful")}
+        for customer_id in expected_ids
+    ]
+
+
 def render_output_csv(explanations: list[dict[str, str]]) -> str:
     lines = ["customer_id,explanation"]
     for row in explanations:
@@ -505,6 +537,7 @@ def main():
     print(f"HF evidence input:          {HF_HIGH_RISK_EVIDENCE_PATH}")
     print(f"HF explanation output:      {HF_EXPLANATION_OUTPUT_PATH}")
     print(f"Total customers this run:   {MAX_CUSTOMERS_PER_RUN}")
+    print(f"Customers per API call:     {LLM_BATCH_SIZE}")
     if MODEL_BACKEND == "gemini":
         print(f"Rate limit pause:           {SECONDS_BETWEEN_CALLS}s")
 
@@ -516,45 +549,38 @@ def main():
         evidence_df = evidence_df.sort_values("final_hybrid_score", ascending=False).reset_index(drop=True)
         if MAX_CUSTOMERS_PER_RUN > 0:
             evidence_df = evidence_df.head(MAX_CUSTOMERS_PER_RUN).copy()
+        batch_size = max(1, LLM_BATCH_SIZE)
         total_customers = len(evidence_df)
-        total_batches = 1 if total_customers > 0 else 0
-        print(f"\nCustomers queued: {total_customers:,}")
+        total_batches = (total_customers + batch_size - 1) // batch_size if total_customers > 0 else 0
+        print(f"\nCustomers queued: {total_customers:,} across {total_batches} batch(es)")
 
         final_rows = []
         errors = []
         local_checkpoint = Path("./model_output_explanations_checkpoint.csv")
 
-        for batch_index, start in enumerate(range(0, len(evidence_df), len(evidence_df) or 1), 1):
-            batch_df = evidence_df.iloc[start:start + len(evidence_df)].copy()
+        for batch_index, start in enumerate(range(0, len(evidence_df), batch_size), 1):
+            batch_df = evidence_df.iloc[start:start + batch_size].copy()
             expected_ids = batch_df["customer_id"].astype(str).tolist()
             payload = [build_input_record(row) for _, row in batch_df.iterrows()]
             user_message = json.dumps(payload, ensure_ascii=False)
 
             print(f"\n[{batch_index}/{total_batches}] Explaining {len(batch_df)} customer(s): {expected_ids}")
 
-            batch_rows = None
-            last_error = None
-            for attempt in range(1, 4):
-                response_text = call_llm(user_message)
-                if response_text.startswith("[ERROR"):
-                    last_error = response_text
-                    print(f"  Attempt {attempt}/3 failed: {response_text}")
-                    continue
+            response_text = call_llm(user_message)
+            if response_text.startswith("[ERROR"):
+                print(f"  Batch failed: {response_text}")
+                errors.append({"batch": batch_index, "customer_ids": expected_ids, "error": response_text})
+                batch_rows = [
+                    {"customer_id": customer_id, "explanation": "unsuccessful"}
+                    for customer_id in expected_ids
+                ]
+            else:
                 try:
                     batch_rows = parse_llm_csv(response_text, expected_ids)
-                    break
                 except Exception as exc:
-                    last_error = str(exc)
-                    print(f"  Attempt {attempt}/3 returned invalid CSV: {exc}")
-
-            if batch_rows is None:
-                errors.append({"batch": batch_index, "customer_ids": expected_ids, "error": last_error})
-                for customer_id in expected_ids:
-                    batch_rows = (batch_rows or [])
-                    batch_rows.append({
-                        "customer_id": customer_id,
-                        "explanation": f"[ERROR: explanation generation failed for batch {batch_index}]",
-                    })
+                    print(f"  Batch returned partially invalid CSV: {exc}")
+                    errors.append({"batch": batch_index, "customer_ids": expected_ids, "error": str(exc)})
+                    batch_rows = parse_llm_csv_partial(response_text, expected_ids)
 
             final_rows.extend(batch_rows)
             checkpoint_text = render_output_csv(final_rows)
