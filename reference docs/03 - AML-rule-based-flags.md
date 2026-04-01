@@ -4,12 +4,12 @@ This document formalizes the deterministic rule-based scoring layer of the hybri
 
 ## Architecture Overview
 
-The rule-based layer is **Layer 2** of the three-layer ensemble:
+The rule-based layer is **Layer 2** of the three-layer hybrid model - 
 
 ```
-Layer 1 (60%) — Typology Isolation Forests
-Layer 2 (30%) — Rule-Based Flags
-Layer 3 (10%) — K-Means Cluster Risk Tier
+Layer 1 — Typology Isolation Forests
+Layer 2 — Rule-Based Flags
+Layer 3 — K-Means Clustering
 ```
 
 Rules are organized into five typology functions, each returning a score in **[0.0, 1.0]** for every customer simultaneously (fully vectorised — no row-by-row iteration). Within each function, indicator sub-blocks produce raw contribution values that are summed then clamped to 1.0.
