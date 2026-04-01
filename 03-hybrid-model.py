@@ -8,25 +8,21 @@ Hybrid AML risk scoring: Typology IF ensemble + Rule-based scoring
 ARCHITECTURE
 ═══════════════════════════════════════════════════════════════════
 
-Layer 1 — Typology Isolation Forests  (weight: 0.60)
-  Five IF scores from 02_isolation_forest.py, one per knowledge-library
-  typology. Combined as a weighted average across typologies, where
-  weights reflect observed signal quality (ROC-AUC from IF validation):
-    structuring_layering 0.30 | trade_shell 0.25 | behavioural_profile 0.20
-    cross_border_geo     0.13 | human_trafficking 0.12
+Pillar 1 — Corroborated Risk (Dynamic Score)  (weight: 0.50)
+  Rule engine scores multiplied by Isolation Forest probabilities.
+  Requires both independent models to fire heavily to achieve a maximum.
+  Normalised as the weighted product of 5 independent typologies.
 
-Layer 2 — Rule-Based Hard Flags  (weight: 0.30)
-  Deterministic vectorised checks against FINTRAC/FinCEN thresholds.
-  One rule score per typology, combined with the same weights as Layer 1.
-  Vectorised — computed across all 61K customers simultaneously, not
-  row-by-row. Rules fire independently of the statistical model, ensuring
-  regulatory thresholds are always reflected in the final score.
+Pillar 2 — Zero-Day Fallback (Isolation Forest)  (weight: 0.20)
+  Fallback score for sophisticated actors who evade all hard FINTRAC rules.
+  IF score fills gaps not covered by rules using a coverage ratio:
+  (1 - coverage) × IF_Score_Weighted
 
-Layer 3 — KMeans Behavioral Peer-Grouping  (weight: 0.30)
-  Clusters customers using RobustScaled raw IF scores to form behavioral archetypes.
-  Must iterate k to ensure min cluster size >= 200 to avoid overfitting.
-  Produces a peer-relative severity rank (kmeans_score): within-cluster percentile
-  of the customer's raw dynamic cross-corroboration sum.
+Pillar 3 — KMeans Behavioral Peer-Grouping  (weight: 0.30)
+  Groups customers by unsupervised behavior shape. Peer-severity is measured
+  using the customer's raw anomaly score against their own assigned cluster.
+  Prevents structural outliers from dominating; relative severity is scaled
+  by the geometric centroid baseline risk of the cluster itself.
 
 Ensemble (3-Pillar Scored Model):
   dynamic_i    = IF_score_i × Rule_score_i          (per typology, 5 values)
@@ -35,7 +31,7 @@ Ensemble (3-Pillar Scored Model):
   
   final_score  = (0.50 × dynamic_norm)
                + (0.20 × (1 − coverage) × IF_weighted)
-               + (0.30 × kmeans_score)
+               + (0.30 × adjusted_kmeans_score)
 
   Normalised to [0,1], ranked. Top 1% flagged as predicted suspicious.
 
@@ -964,76 +960,60 @@ def select_k(X: np.ndarray, k_range: range) -> int:
     return best_k
 
 
-def profile_clusters(df: pd.DataFrame, rule_cols: list) -> pd.DataFrame:
+def profile_clusters(df: pd.DataFrame, if_cols: list) -> pd.DataFrame:
     """
-    Profile each cluster by the mean RULE score of its members.
-
-    Clustering is performed in rule score space (not IF space), so each
-    cluster groups customers by which regulatory thresholds they co-trigger,
-    independent of how statistically anomalous they look to the IF model.
+    Profile each cluster by the pure Unsupervised IF Anomaly scores of its members.
 
     How it works:
-      1. Compute the mean of each typology rule score within each cluster.
-         This tells us which regulatory threshold patterns the typical
-         cluster member fires — e.g. a cluster dominated by high
-         rule_cross_border_geo means its members share international
-         transaction patterns that trigger GEO-001..005 / WIRE-008/010.
-      2. Normalise these means across clusters to identify relative dominance.
-         A cluster where rule_structuring_layering averages 0.45 while
-         others average 0.05 is a structuring-dominant regulatory cohort.
-      3. The primary typology label is the highest normalised dimension,
-         but only if it exceeds 0.25 — below this no typology dominates
-         and the cluster is labelled General — Low Risk.
-      4. Risk tier is based on the mean of ALL rule scores for that cluster.
-         Mean is more representative than max; max is distorted by a handful
-         of extreme rule violators within the cluster.
-
-    Risk tiers:
-      High   (1.0) — cluster mean rule risk > 67th percentile across clusters
-      Medium (0.5) — cluster mean rule risk > 33rd percentile
-      Low    (0.0) — cluster mean rule risk <= 33rd percentile
+      1. Compute the mean for each of the 5 raw IF scores within each cluster.
+         This represents the geometric "location" of the cluster in anomaly space.
+      2. The primary typology label is the IF score with the highest mean.
+         (If all are very low, <0.20, label it General — Low Risk).
+      3. Risk tier is based on the cluster's overall mean IF score (across all typologies
+         and all members). This breaks circularity with the rule-based Dynamic Score.
+      4. The risk tier is min-max normalised across the K active clusters to [0.1, 1.0].
+         The safest cluster gets 0.1 (so peer comparison isn't entirely discarded),
+         and the weirdest cluster gets 1.0.
     """
-    profile = df.groupby("cluster")[rule_cols].mean()
-    p_norm  = (profile - profile.min()) / (profile.max() - profile.min() + 1e-9)
-
-    # Map rule column names to display labels
-    rule_label_map = {
-        "rule_structuring_layering":  TYPOLOGY_LABELS["if_score_structuring_layering"],
-        "rule_behavioural_profile":   TYPOLOGY_LABELS["if_score_behavioural_profile"],
-        "rule_trade_shell":           TYPOLOGY_LABELS["if_score_trade_shell"],
-        "rule_cross_border_geo":      TYPOLOGY_LABELS["if_score_cross_border_geo"],
-        "rule_human_trafficking":     TYPOLOGY_LABELS["if_score_human_trafficking"],
-        # dynamic_ prefix variants (used when clustering on IF×Rule scores)
-        "dynamic_structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
-        "dynamic_behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
-        "dynamic_trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
-        "dynamic_cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
-        "dynamic_human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
+    profile = df.groupby("cluster")[if_cols].mean()
+    
+    # Map IF column names to display labels
+    if_label_map = {
+        "if_score_structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
+        "if_score_behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
+        "if_score_trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
+        "if_score_cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
+        "if_score_human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
     }
 
     def assign_label(row):
-        return "General — Low Risk" if row.max() < 0.25 \
-               else rule_label_map.get(row.idxmax(), row.idxmax())
+        return "General — Low Risk" if row.max() < 0.20 \
+               else if_label_map.get(row.idxmax(), row.idxmax())
 
-    primary   = p_norm.apply(assign_label, axis=1)
-    mean_risk = profile.mean(axis=1)
-    p33, p67  = mean_risk.quantile(0.33), mean_risk.quantile(0.67)
-    risk_tier = mean_risk.apply(lambda x: 1.0 if x > p67 else (0.5 if x > p33 else 0.0))
+    primary = profile.apply(assign_label, axis=1)
+
+    # Risk tier is the [0.1, 1.0] scaled mean of if_score_mean
+    cluster_if_means = df.groupby("cluster")["if_score_mean"].mean()
+    tier_min = cluster_if_means.min()
+    tier_max = cluster_if_means.max()
+    
+    risk_tier = 0.1 + 0.9 * (cluster_if_means - tier_min) / (tier_max - tier_min + 1e-9)
 
     summary = pd.DataFrame({"primary_typology": primary, "risk_tier": risk_tier})
 
     k = len(profile)
-    short = [c.replace("rule_", "").replace("dynamic_", "")[:14] for c in rule_cols]
-    print(f"\n  Cluster profiles (k={k}, mean rule scores):")
+    short = [c.replace("if_score_", "")[:14] for c in if_cols]
+    print(f"\n  Cluster profiles (k={k}, pure IF anomaly shaping):")
     print("  {:>3}  {:>7}  {}  {:>5}  Label".format(
         "Cls", "n", "  ".join(f"{h:>14}" for h in short), "Tier"))
     print("  " + "-" * 110)
-    for c in profile.index:
-        n     = (df["cluster"] == c).sum()
-        vals  = "  ".join(f"{profile.loc[c, col]:>14.3f}" for col in rule_cols)
-        tier  = {0.0: "LOW", 0.5: "MED", 1.0: "HIGH"}[risk_tier[c]]
-        label = summary.loc[c, "primary_typology"]
-        print(f"  {c:>3}  {n:>7,}  {vals}  {tier:>5}  {label}")
+
+    for cid in profile.index:
+        n     = (df["cluster"] == cid).sum()
+        vals  = "  ".join(f"{profile.loc[cid, col]:>14.3f}" for col in if_cols)
+        rt    = summary.loc[cid, "risk_tier"]
+        label = summary.loc[cid, "primary_typology"]
+        print(f"  {cid:>3}  {n:>7,}  {vals}  {rt:>5.2f}  {label}")
 
     return summary
 
@@ -1275,28 +1255,25 @@ def main():
               f"Dropping k to {best_k - 1}...")
         best_k -= 1
     else:
-        print(f"  WARNING: Could not satisfy min cluster size >= {MIN_CLUSTER_SIZE} "
-              f"before hitting k_floor={k_floor}. Proceeding with k={k_floor}.")
+        print(f"  WARNING: Proceeding with k={k_floor} despite thin clusters.")
         best_k = k_floor
 
-    df_cluster = pre_hybrid[["customer_id", "dynamic_score_raw"]].copy()
+    df_cluster = pre_hybrid[["customer_id", "dynamic_score_raw", "if_score_mean"] + avail_if_cols].copy()
     df_cluster["cluster"] = labels_arr
 
-    cluster_summary = profile_clusters(df_cluster, ["dynamic_score_raw"])
+    cluster_summary = profile_clusters(df_cluster, avail_if_cols)
     df_cluster["cluster_primary_typology"] = df_cluster["cluster"].map(
         cluster_summary["primary_typology"])
     df_cluster["cluster_risk_tier"] = df_cluster["cluster"].map(
         cluster_summary["risk_tier"])
 
-    # Within-cluster percentile rank of dynamic_score_raw.
-    # IMPORTANT: We rank on dynamic_score_raw (not dynamic_score_norm) because
-    # dynamic_score_norm is globally normalised, giving nearly everyone in the
-    # low-risk blob values of ~0.0-0.05. That causes tying problems. The raw
-    # sum has higher numerical resolution and identical relative ordering.
+    # Within-cluster percentile rank of if_score_mean.
+    # IMPORTANT: We rank on if_score_mean to keep Pillar 3 fully independent
+    # of the deterministic Rule scores embedded in Pillar 1.
     kmeans_score = np.zeros(len(df_cluster), dtype=float)
     for cid in range(best_k):
         mask     = df_cluster["cluster"].values == cid
-        raw_vals = df_cluster.loc[mask, "dynamic_score_raw"].values
+        raw_vals = df_cluster.loc[mask, "if_score_mean"].values
         n        = mask.sum()
         if n == 0:
             continue
@@ -1309,88 +1286,7 @@ def main():
           f"mean={kmeans_score.mean():.3f}  "
           f"p95={np.percentile(kmeans_score, 95):.3f}  "
           f"max={kmeans_score.max():.3f}")
-    # Purpose: Group customers into behavioral archetypes using the 5 raw IF
-    # anomaly scores. Clusters are formed purely from the ML model's view of
-    # each customer's behavioral shape — independent of the rule engine.
-    # The within-cluster percentile (derived from dynamic_score_raw) then
-    # measures relative severity against behavioral peers, not the full
-    # population. This is the core insight: a customer who is the most
-    # rule-corroborated anomaly WITHIN their own behavioral cohort is a
-    # stronger signal than absolute raw scores alone.
-    print("\n" + "-" * 70)
-    print("Layer 3 — KMeans behavioral peer-grouping on raw IF scores...")
-    print("  Input: 5 raw IF scores, RobustScaled  (k-means++, n_init=20)")
-    print("  Score: within-cluster percentile rank of dynamic_score_raw")
-    print("-" * 70)
 
-    from sklearn.preprocessing import RobustScaler
-
-    # RobustScaler: uses IQR, so extreme right-skew of IF scores doesn't
-    # distort the cluster centroids. Outliers remain far from the centroid
-    # without artificially inflating the scale of the normal population.
-    X_if = pre_hybrid[avail_if_cols].fillna(0).values
-    X_if_scaled = RobustScaler().fit_transform(X_if)
-
-    # Thin-cluster refit loop: drop K until all clusters have >= 200 members.
-    # A cluster smaller than 200 members (0.33% of 61K) cannot generate
-    # a statistically meaningful percentile rank.
-    MIN_CLUSTER_SIZE = 200
-    best_k = 8
-    k_floor = 3
-    while best_k >= k_floor:
-        print(f"\n  Fitting KMeans with k={best_k}...")
-        kmeans = KMeans(
-            n_clusters=best_k,
-            init="k-means++",
-            n_init=20,
-            random_state=42,
-        )
-        kmeans.fit(X_if_scaled)
-        labels_arr   = kmeans.labels_
-        cluster_sizes = np.bincount(labels_arr)
-        min_size = cluster_sizes.min()
-        print(f"  Cluster sizes — min={min_size}  max={cluster_sizes.max()}  "
-              f"mean={cluster_sizes.mean():.0f}")
-        if min_size >= MIN_CLUSTER_SIZE:
-            break
-        print(f"  Thin cluster detected (min={min_size} < {MIN_CLUSTER_SIZE}). "
-              f"Dropping k to {best_k - 1}...")
-        best_k -= 1
-    else:
-        print(f"  WARNING: Could not satisfy min cluster size >= {MIN_CLUSTER_SIZE} "
-              f"before hitting k_floor={k_floor}. Proceeding with k={best_k}+1.")
-        best_k += 1
-
-    df_cluster = pre_hybrid[["customer_id", "dynamic_score_raw"]].copy()
-    df_cluster["cluster"] = labels_arr
-
-    cluster_summary = profile_clusters(df_cluster, ["dynamic_score_raw"])
-    df_cluster["cluster_primary_typology"] = df_cluster["cluster"].map(
-        cluster_summary["primary_typology"])
-    df_cluster["cluster_risk_tier"] = df_cluster["cluster"].map(
-        cluster_summary["risk_tier"])
-
-    # Within-cluster percentile rank of dynamic_score_raw.
-    # IMPORTANT: We rank on dynamic_score_raw (not dynamic_score_norm) because
-    # dynamic_score_norm is globally normalised, giving nearly everyone in the
-    # low-risk blob values of ~0.0-0.05. That causes tying problems. The raw
-    # sum has higher numerical resolution and identical relative ordering.
-    kmeans_score = np.zeros(len(df_cluster), dtype=float)
-    for cid in range(best_k):
-        mask = df_cluster["cluster"].values == cid
-        raw_vals = df_cluster.loc[mask, "dynamic_score_raw"].values
-        n = mask.sum()
-        if n == 0:
-            continue
-        # percentile_rank: fraction of peers with a LOWER score
-        ranks = np.argsort(np.argsort(raw_vals))  # zero-indexed ordinal rank
-        kmeans_score[mask] = ranks / max(n - 1, 1)
-    df_cluster["kmeans_score"] = kmeans_score
-
-    print(f"\n  KMeans score (within-cluster percentile) — "
-          f"mean={kmeans_score.mean():.3f}  "
-          f"p95={np.percentile(kmeans_score, 95):.3f}  "
-          f"max={kmeans_score.max():.3f}")
 
     # ── Ensemble fusion: 3-Pillar Scored Model ───────────────────────────────
     # final_score = 0.50 × dynamic_score_norm       (corroborated risk signal)
@@ -1537,8 +1433,9 @@ def main():
                 typology, ind_id = col_name.split("::")
                 if_col   = typology_if_map.get(typology)
                 if_score = row.get(if_col, 0.0) if if_col else 0.0
-                # Smoking gun override: raw >= 0.40 bypasses the IF multiplier
-                impact = raw_val * 2.0 if raw_val >= 0.40 else raw_val * if_score
+                # Calculate trace impact strictly as the dynamic product (raw * IF)
+                # to perfectly mirror the logic driving Pillar 1.
+                impact = raw_val * if_score
                 if impact < 0.015:
                     continue
                 sev = "H" if raw_val > 0.20 else ("M" if raw_val >= 0.10 else "L")
