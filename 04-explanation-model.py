@@ -54,9 +54,19 @@ HF_HIGH_RISK_EVIDENCE_PATH = os.getenv(
     "HF_HIGH_RISK_EVIDENCE_PATH",
     "outputs/high_risk_evidence.csv",
 )
+
+
+def default_explanation_output_path(model_backend: str) -> str:
+    if model_backend == "gemini":
+        return "outputs/gemini_output_explanations.csv"
+    if model_backend == "local_llm":
+        return "outputs/llama_output_explanations.csv"
+    return "outputs/model_output_explanations.csv"
+
+
 HF_EXPLANATION_OUTPUT_PATH = os.getenv(
     "HF_EXPLANATION_OUTPUT_PATH",
-    "outputs/model_output_explanations.csv",
+    default_explanation_output_path(MODEL_BACKEND),
 )
 
 SYSTEM_PROMPT = """You are an expert Anti-Money Laundering (AML) explanation writer embedded in a financial intelligence pipeline. Your sole task is to read structured customer evidence records and produce a concise, professional, plain-language narrative for each customer that an AML analyst can immediately act on.
@@ -484,7 +494,7 @@ def main():
             evidence_df = evidence_df.head(MAX_CUSTOMERS_PER_RUN).copy()
         total_customers = len(evidence_df)
         total_batches = 1 if total_customers > 0 else 0
-        print(f"\nCustomers queued: {total_customers:,} across {total_batches} batch(es)")
+        print(f"\nCustomers queued: {total_customers:,}")
 
         final_rows = []
         errors = []
