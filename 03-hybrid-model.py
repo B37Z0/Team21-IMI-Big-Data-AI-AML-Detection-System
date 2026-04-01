@@ -44,22 +44,35 @@ Usage:
 """
 
 import argparse
+import os
+import sys
+import tempfile
 import warnings
 from pathlib import Path
+from urllib.parse import urlparse
 
 import joblib
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
+from huggingface_hub import HfApi, hf_hub_download
 from sklearn.cluster import KMeans
 from sklearn.metrics import roc_auc_score, silhouette_score
 
 warnings.filterwarnings("ignore")
 np.random.seed(42)
+load_dotenv()
+sys.stdout.reconfigure(line_buffering=True)
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+DEFAULT_HF_DATASET_REPO = "scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai"
+DEFAULT_HF_FEATURES_PATH = "outputs/customer_features_enhanced.csv"
+DEFAULT_HF_IF_RESULTS_PATH = "outputs/isolation_forest_results.csv"
+DEFAULT_HF_OUTPUT_DIR = "outputs"
 
 IF_SCORE_COLS = [
     "if_score_structuring_layering",
@@ -1041,9 +1054,58 @@ def risk_category(score: float) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+def normalize_hf_repo_id(repo: str) -> str:
+    """Accept either a repo_id or a full HF dataset URL and return repo_id."""
+    repo = (repo or "").strip()
+    if not repo:
+        return DEFAULT_HF_DATASET_REPO
+    if repo.startswith("https://") or repo.startswith("http://"):
+        parts = [p for p in urlparse(repo).path.strip("/").split("/") if p]
+        if len(parts) >= 3 and parts[0] == "datasets":
+            return "/".join(parts[1:3])
+    return repo
+
+
+def download_hf_csv(repo_id: str, token: str | None, path_in_repo: str) -> pd.DataFrame:
+    local_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=path_in_repo,
+        repo_type="dataset",
+        token=token,
+    )
+    return pd.read_csv(local_path)
+
+
+def upload_hf_file(api: HfApi, repo_id: str, token: str | None, local_path: Path, path_in_repo: str) -> None:
+    api.upload_file(
+        path_or_fileobj=str(local_path),
+        path_in_repo=path_in_repo,
+        repo_id=repo_id,
+        repo_type="dataset",
+        token=token,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="AML Hybrid Model")
-    parser.add_argument("--base_dir", type=str, default="/content/gdrive/MyDrive/AML_Competition")
+    parser.add_argument(
+        "--hf_repo",
+        type=str,
+        default=os.getenv("HF_DATASET_REPO", DEFAULT_HF_DATASET_REPO),
+        help="Hugging Face dataset repo_id or dataset URL.",
+    )
+    parser.add_argument(
+        "--hf_token",
+        type=str,
+        default=os.getenv("HF_TOKEN"),
+        help="Hugging Face token for private datasets.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=DEFAULT_HF_OUTPUT_DIR,
+        help="HF folder where hybrid model outputs will be uploaded.",
+    )
     parser.add_argument("--k_min",   type=int, default=3,
                         help="Min k for silhouette search (default: 3)")
     parser.add_argument("--k_max",   type=int, default=8,
@@ -1058,10 +1120,12 @@ def main():
                         help="Weight for normalised dynamic score (default: 0.35)")
     args = parser.parse_args()
 
-    base_dir  = Path(args.base_dir)
-    feat_dir  = base_dir / "features"
-    model_dir = base_dir / "models"
-    model_dir.mkdir(exist_ok=True, parents=True)
+    hf_repo = normalize_hf_repo_id(args.hf_repo)
+    hf_token = args.hf_token
+    output_dir = args.output_dir.strip("/").strip()
+
+    if not hf_token:
+        raise ValueError("HF token is required. Set HF_TOKEN in .env or pass --hf_token.")
 
     print("=" * 70)
     print("HYBRID AML MODEL — IF + Rules (Coverage-Based Fallback ensemble)")
@@ -1074,9 +1138,9 @@ def main():
     print("(FINTRAC/FinCEN thresholds grounded — weights reflect IF validation ROC-AUC)")
 
     # ── Load ───────────────────────────────────────────────────────────────
-    print("\nLoading data...")
-    iso_results = pd.read_csv(model_dir / "isolation_forest_results.csv")
-    df_features = pd.read_csv(feat_dir  / "customer_features_enhanced.csv")
+    print("\nLoading data from Hugging Face...")
+    iso_results = download_hf_csv(hf_repo, hf_token, DEFAULT_HF_IF_RESULTS_PATH)
+    df_features = download_hf_csv(hf_repo, hf_token, DEFAULT_HF_FEATURES_PATH)
     print(f"   IF results:     {len(iso_results):,} customers")
     print(f"   Feature matrix: {df_features.shape}")
 
@@ -1375,10 +1439,7 @@ def main():
             return " | ".join(f"{typ}: {', '.join(lst)}" for typ, lst in grouped.items())
 
         hybrid["rule_indicator_trace"] = hybrid.apply(format_dynamic_trace, axis=1)
-    # else: rule_indicator_trace already present from apply_rule_scores───────────
-    hybrid.to_csv(model_dir / "hybrid_model_results.csv", index=False)
-    hybrid[hybrid["final_hybrid_score"] > 0.60].to_csv(
-        model_dir / "hybrid_model_high_risk.csv", index=False)
+    # else: rule_indicator_trace already present from apply_rule_scores
 
     results = hybrid[["customer_id", "final_hybrid_score"]].copy()
     results["predicted_label"] = (
@@ -1397,13 +1458,36 @@ def main():
          "cluster_risk_tier", "cluster_score", "rule_indicator_trace"]
         + avail_if_cols + rule_cols + dynamic_cols
     )
-    hybrid[[c for c in evidence_cols if c in hybrid.columns]]\
-        [hybrid["final_hybrid_score"] > 0.60]\
-        .to_csv(model_dir / "high_risk_evidence.csv", index=False)
+    
+    # ── Save to Hugging Face ───────────────────────────────────────────────
+    api = HfApi()
+    output_files = {
+        "results.csv": results,
+        "hybrid_model_results.csv": hybrid,
+        "hybrid_model_high_risk.csv": hybrid[hybrid["final_hybrid_score"] > 0.60],
+        "high_risk_evidence.csv": hybrid[[c for c in evidence_cols if c in hybrid.columns]][hybrid["final_hybrid_score"] > 0.60],
+        "cluster_typology_profile.csv": cluster_summary,
+    }
 
-    joblib.dump(kmeans, model_dir / "kmeans_model.pkl")
-    joblib.dump(best_k, model_dir / "kmeans_k.pkl")
-    cluster_summary.to_csv(model_dir / "cluster_typology_profile.csv")
+    print("\n" + "-" * 70)
+    print(f"Uploading files to Hugging Face '{hf_repo}/{output_dir}'")
+    print("-" * 70)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        for filename, frame in output_files.items():
+            local_file = tmp_path / filename
+            frame.to_csv(local_file, index=False)
+            print(f"  Uploading {filename}...")
+            upload_hf_file(api, hf_repo, hf_token, local_file, f"{output_dir}/{filename}")
+
+        print("  Uploading KMeans models...")
+        kmeans_path = tmp_path / "kmeans_model.pkl"
+        kmeans_k_path = tmp_path / "kmeans_k.pkl"
+        joblib.dump(kmeans, kmeans_path)
+        joblib.dump(best_k, kmeans_k_path)
+        upload_hf_file(api, hf_repo, hf_token, kmeans_path, f"{output_dir}/kmeans_model.pkl")
+        upload_hf_file(api, hf_repo, hf_token, kmeans_k_path, f"{output_dir}/kmeans_k.pkl")
 
     print("\n" + "=" * 70)
     print("HYBRID MODEL COMPLETE")
