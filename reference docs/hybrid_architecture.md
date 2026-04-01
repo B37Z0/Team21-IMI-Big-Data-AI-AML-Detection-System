@@ -81,17 +81,3 @@ The weights have been structured primarily to ensure regulatory compliance, and 
 * **Regulatory Primacy:** Basic FINTRAC/FinCEN compliance should take precedence. If Customer A breaks explicit $10k reporting thresholds, the model should score a non-definite ML anomaly higher than them. The dynamic score is weighed (`0.50`) to ensure explicit rule-breakers loosely comprise a 'straightforward' half of the final score.
 * **Throttling the Safety Net:** The fallback is necessary, but pure ML anomalies should have a high false-positive rate. By throttling the fallback to `0.20`, a 'maximum undetected anomaly' (Coverage=0) scores `0.50` raw points (`0.2 IF + 0.3 KMeans`). A 'maximum rule-breaker' (Coverage=1) scores `0.80` raw points (`0.5 Dynamic + 0.3 KMeans`). 
 ---
-
-## Sanity Check & Intuitn
-
-We can to a limited capacity test the model against known labels to validate: the Hybrid Ensemble's ROC-AUC (`0.852`) is higher than any of its individual constituents:
-- Hybrid (weighted ensemble):  0.852
-- IF weighted alone:           0.840
-- IF max alone:                0.843
-- Rules alone (weighted):      0.734
-- Dynamic score (IF×Rule):     0.818
-- KMeans adjusted percentile:  0.724
-
-The hybrid model out-performs its components because of orthogonal signals (at least we think as much). The three pillars (are intended to) cover most aspects of illicit financial activity with minimal overlap.
-
-Because the components fail on *different* types of customers (their errors are ideally uncorrelated), blending them dilutes the false positives (since they rarely agree on a false positive) while stacking true positives. The resulting ensemble creates an umbrella that no single methodology could provide alone.
