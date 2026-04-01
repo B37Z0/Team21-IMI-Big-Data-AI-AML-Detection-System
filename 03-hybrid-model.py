@@ -1333,7 +1333,6 @@ def main():
     ).astype(int)
     results = results.rename(columns={"final_hybrid_score": "risk_score"})[
         ["customer_id", "predicted_label", "risk_score"]]
-    results.to_csv(model_dir / "results.csv", index=False)
 
     evidence_cols = (
         ["customer_id", "final_hybrid_score", "hybrid_risk_category",
