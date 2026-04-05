@@ -196,7 +196,7 @@ Each explanation is a single paragraph of 3 to 5 sentences written in plain Engl
 
 4. USE PEER CONTEXT PURPOSEFULLY. If cluster_primary_typology aligns with the rule evidence, briefly note that the customer's behaviour is consistent with a known high-risk peer group. If it diverges, note the discrepancy as an additional reason for scrutiny.
 
-5. FLAG LOW COVERAGE. If coverage is 0.20 or below, you must include this sentence verbatim: "Note: this customer's risk score is primarily driven by unsupervised behavioural anomaly detection rather than confirmed rule triggers; findings should be treated as anomaly-driven leads and weighted accordingly."
+5. FLAG LOW COVERAGE. If coverage is 0.40 or below, you must include this sentence verbatim: "Note: this customer's risk score is primarily driven by unsupervised behavioural anomaly detection rather than confirmed rule triggers; findings should be treated as anomaly-driven leads and weighted accordingly."
 
 6. DO NOT SPECULATE. Do not assert that money laundering or trafficking has occurred. Use hedged language: "is consistent with", "suggests", "warrants investigation for", "may indicate".
 

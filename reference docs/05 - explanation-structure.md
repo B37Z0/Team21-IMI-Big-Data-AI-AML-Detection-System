@@ -30,14 +30,13 @@ Five float values in [0, 1], one per typology:
 - `rule_cross_border_geo`
 - `rule_human_trafficking`
 
-These are read **directly from `high_risk_evidence.csv`**, not derived from the trace.
-
 > **These are not Isolation Forest scores.** `rule_{typology}` values come entirely from the deterministic rule engine in `03-hybrid-model.py` — weighted sums of hard FINTRAC/FinCEN threshold checks, clipped to [0, 1]. The ML-derived equivalents are the `if_score_{typology}` columns. The two are combined into the dynamic score (`if_score × rule_score` per typology), which is what ranks the top-5 trace indicators, but they remain distinct signals.
 
-**Why not derive from the trace?**  
-Because the global top-5 cut can eliminate an entire typology's indicators if they rank below 5. A customer could have `rule_structuring_layering = 0.45` (meaningful activity) but zero structuring indicators in the trace (all beaten out by higher-impact HT or GEO signals). If the LLM only sees the trace-derived count, it concludes structuring is silent — which is wrong. 
+These are also read **directly from `high_risk_evidence.csv`**, not derived from the trace.
 
-The direct score columns answer a different question: **"Is this typology meaningfully active at all?"** — independent of whether any of its indicators happened to crack the top 5. This is what drives Rule 7 in the system prompt (secondary typology detection).
+
+**Why not derive from the trace?**  
+Because the global top-5 cut can eliminate an entire typology's indicators if they rank below 5. A customer could have `rule_structuring_layering = 0.45` (meaningful activity) but zero structuring indicators in the trace (all beaten out by higher-impact HT or GEO signals). If the LLM only sees the trace-derived count, it concludes structuring is silent — which is wrong. The direct score columns answer a different question: **"Is this typology meaningfully active at all?"** — independent of whether any of its indicators happened to crack the top 5. This is what should drive Rule 7 in the system prompt (secondary typology detection).
 
 **The two layers are complementary:**
 - Trace → what to cite in text (specific indicators with severity)
