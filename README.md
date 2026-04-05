@@ -4,6 +4,9 @@ Submission for the **2025–2026 IMI Big Data & Artificial Intelligence Competit
 
 ![Pipeline visualization](pipeline-visualization.png)
 
+*View an interactive pipeline visualization:*
+[*pipeline-visualization.html*](pipeline-visualization.html)
+
 ---
 
 ## System Architecture — 3-Pillar Hybrid Ensemble
@@ -99,7 +102,6 @@ All intermediate and output files are stored in the `outputs/` folder of the Hug
 | [`reference docs/03 - AML-rule-based-flags.md`](reference%20docs/03%20-%20AML-rule-based-flags.md) | Full rule indicator catalogue with FINTRAC/FinCEN grounding |
 | [`reference docs/04 - hybrid-architecture.md`](reference%20docs/04%20-%20hybrid-architecture.md) | Detailed 3-pillar ensemble architecture and design decisions |
 | [`reference docs/05 - explanation-structure.md`](reference%20docs/05%20-%20explanation-structure.md) | Explanation engine architecture: two-layer evidence design, system prompt structure, batch processing |
-| [`reference docs/pipeline-review-log.md`](reference%20docs/pipeline-review-log.md) | Audit log of all issues identified and fixes applied across pipeline scripts |
 | `reference docs/01 - data fields.pdf` | Competition dataset field definitions |
 | `reference docs/02 - AML-features.pdf` | Feature engineering specification |
 | `AML-indicator-DB.csv` | Master indicator database (36 indicators across 5 typologies) used by rule engine and explanation model |
