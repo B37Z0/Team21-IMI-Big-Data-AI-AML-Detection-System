@@ -12,9 +12,14 @@ Layer 2 — Rule-Based Flags
 Layer 3 — K-Means Clustering
 ```
 
-Rules are organized into five typology functions, each returning a score in **[0.0, 1.0]** for every customer simultaneously (fully vectorised — no row-by-row iteration). Within each function, indicator sub-blocks produce raw contribution values that are summed then clamped to 1.0.
+The rules do **not** contribute a standalone score to the final ensemble. Instead, each rule typology score is multiplied element-wise against its corresponding Isolation Forest probability to form a **Dynamic Score**:
 
-The five typology rule scores are weighted using the same typology weights as the Isolation Forest layer and combined into a single `rule_score_weighted` value per customer.
+```
+dynamic_i    = Rule_score_i × IF_score_i          (per typology, 5 values)
+dynamic_norm = min-max normalised sum of dynamic_i across population
+```
+
+Ultimately, the five typology rule scores are combined into a single `rule_score_weighted` value per customer.
 
 ### Scoring Design Principles
 

@@ -54,6 +54,7 @@ from dotenv import load_dotenv
 from huggingface_hub import HfApi, hf_hub_download
 from sklearn.cluster import KMeans
 from sklearn.metrics import roc_auc_score, silhouette_score
+from sklearn.preprocessing import RobustScaler
 
 warnings.filterwarnings("ignore")
 np.random.seed(42)
@@ -190,7 +191,6 @@ aml_relevant_mcc = {
     7399: "Business Services Not Elsewhere Classified",
 
     # --- General Stores ---
-    5499: "Miscellaneous Food Stores–Convenience Stores, Markets, Specialty Stores, and Vending Machines",
     7210: "Cleaning, Garment and Laundry Services",
     7211: "Laundry Services–Family and Commercial",
     5300: "Wholesale Clubs",
@@ -940,19 +940,20 @@ def apply_rule_scores(df: pd.DataFrame) -> pd.DataFrame:
 
 def select_k(X: np.ndarray, k_range: range) -> int:
     """
-    Choose k by silhouette score on a subsample.
+    Choose k by silhouette score on a subsample of the RobustScaled IF matrix.
 
     The silhouette score measures how similar each customer is to its own
     cluster compared to the nearest other cluster. A score near +1 means
     the customer fits well in its cluster; near 0 means ambiguous; near -1
     means it may belong in the neighbouring cluster.
 
-    We auto-select k because the IF score space does NOT have 5 natural
-    groupings just because there are 5 typologies. The majority of customers
-    are low-risk across all typologies and form one large mass. Forcing k=5
-    wastes clusters by fragmenting that mass into indistinct sub-groups.
-    The silhouette criterion finds the k that creates the most compact,
-    well-separated groupings given the actual score distribution.
+    We auto-select k because the IF score space has no fixed number of natural
+    groupings. The majority of customers are low-risk across all typologies and
+    form one large mass; forcing a fixed k wastes clusters by fragmenting that
+    mass into indistinct sub-groups. The silhouette criterion finds the k that
+    creates the most compact, well-separated groupings given the actual score
+    distribution. The result is then passed to the thin-cluster refit loop,
+    which descends k if any cluster falls below the minimum size threshold.
     """
     n_sample   = min(5000, len(X))
     sample_idx = np.random.choice(len(X), n_sample, replace=False)
@@ -1111,10 +1112,10 @@ def main():
     print("5 Typologies — AML-indicator-DB.xlsx")
     print("=" * 70)
     print(f"\nEnsemble: 0.50 × dynamic_norm  +  0.20 × (1−coverage) × IF_weighted  +  0.30 × kmeans_score")
-    print(f"KMeans:   Behavioral peer-grouping on raw IF scores (thin-cluster safeguard > 200)")
+    print(f"KMeans:   Silhouette auto-k selection [4, 12], then thin-cluster safeguard >= 200")
     tw = {k.replace("if_score_", ""): v for k, v in TYPOLOGY_WEIGHTS.items()}
     print(f"Typology weights (IF layer): {tw}")
-    print("(FINTRAC/FinCEN thresholds grounded")
+    print("(FINTRAC/FinCEN thresholds used for rule tiers — see AML-rule-based-flags.md)")
 
     # ── Load ───────────────────────────────────────────────────────────────
     print("\nLoading data from Hugging Face...")
@@ -1250,18 +1251,17 @@ def main():
     # Purpose: Group customers into behavioral archetypes using the 5 raw IF
     # anomaly scores. Clusters are formed purely from the ML model's view of
     # each customer's behavioral shape - independent of the rule engine.
-    # The within-cluster percentile (derived from dynamic_score_raw) then
+    # The within-cluster percentile (derived from if_score_mean) then
     # measures relative severity against behavioral peers, not the full
     # population. This is the core insight: a customer who is the most
-    # rule-corroborated anomaly WITHIN their own behavioral cohort is a
-    # stronger signal than absolute raw scores alone.
+    # anomalous WITHIN their own behavioral cohort — as measured by the IF model —
+    # is a stronger signal than absolute raw scores alone.
     print("\n" + "-" * 70)
     print("Layer 3 \u2014 KMeans behavioral peer-grouping on raw IF scores...")
     print("  Input: 5 raw IF scores, RobustScaled  (k-means++, n_init=20)")
-    print("  Score: within-cluster percentile rank of dynamic_score_raw")
+    print("  Score: within-cluster percentile rank of if_score_mean (independent of Pillar 1)")
     print("-" * 70)
 
-    from sklearn.preprocessing import RobustScaler
 
     # RobustScaler: uses IQR, so extreme right-skew of IF scores doesn't
     # distort the cluster centroids. Outliers remain far from the centroid
@@ -1269,12 +1269,18 @@ def main():
     X_if        = pre_hybrid[avail_if_cols].fillna(0).values
     X_if_scaled = RobustScaler().fit_transform(X_if)
 
-    # Thin-cluster refit loop: drop K until all clusters have >= 200 members.
+    # Step 1 — Silhouette auto-k selection.
+    # Search k in [4, 12] on a subsample of the scaled IF matrix.
+    # The silhouette score picks the k with the most compact, well-separated
+    # clusters given the actual score distribution — no hardcoded assumption.
+    MIN_CLUSTER_SIZE = 200
+    k_floor = 3
+    best_k  = select_k(X_if_scaled, range(4, 13))
+
+    # Step 2 — Thin-cluster refit loop.
+    # Descend k until every cluster has >= MIN_CLUSTER_SIZE members.
     # A cluster smaller than 200 members (0.33% of 61K) cannot generate
     # a statistically meaningful percentile rank.
-    MIN_CLUSTER_SIZE = 200
-    best_k  = 8
-    k_floor = 3
     while best_k >= k_floor:
         print(f"\n  Fitting KMeans with k={best_k}...")
         kmeans = KMeans(
@@ -1512,6 +1518,8 @@ def main():
     )
     
     # ── Save to Hugging Face ───────────────────────────────────────────────
+    # > 0.50 threshold for evidence (broader set for LLM explanation model input).
+    # > 0.60 threshold for hybrid_model_high_risk.csv (tighter operational alert list).
     high_risk_evidence = (
         hybrid[[c for c in evidence_cols if c in hybrid.columns]]
         [hybrid["final_hybrid_score"] > 0.50]

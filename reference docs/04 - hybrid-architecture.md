@@ -46,7 +46,7 @@ This pillar provides "relative severity". KMeans allows us to group similar cust
 We feed all 61,000 customers into the KMeans algorithm using *only* their 5 pure Isolation Forest anomaly probabilities. Because anomalies are highly left-skewed, we need to aggressively flatten them using a `RobustScaler()` (using the Interquartile Range rather than strict variance). This prevents ultra-anomalies from dragging cluster centroids artificially outward.
 
 ### 2. The Thin-Cluster Refit Loop
-KMeans begins by slicing the 61,000 customers into `K=8` behavioral archetypes. We must also institute a strict statistical safeguard: a percentile rank is useless if the sample size is insignificant. If any cluster contains fewer than `200` members, we reject the fit and dynamically drop `K` to `7`, and refit. This should iterate downwards until stable, macro-level cohorts are achieved.
+KMeans does not use a hardcoded K. First, `select_k()` evaluates silhouette scores across k ∈ [4, 12] on a 5,000-row subsample to find the k where cluster geometry is most internally coherent. The thin-cluster refit then takes that `best_k` as its starting point: if any cluster contains fewer than `200` members, the fit is rejected, K is decremented by 1, and the model is refit. This iterates downward until all clusters meet the minimum membership threshold, ensuring a percentile rank is only computed over a statistically meaningful peer group.
 
 ### 3. Within-Cluster Percentile (`kmeans_score`)
 Once clustered, the pipeline evaluates each customer against the rest of their cluster members using their average Isolation Forest anomaly score (`if_score_mean`).

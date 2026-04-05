@@ -292,9 +292,13 @@ def build_customer_features(txn: pd.DataFrame, df_kyc_ind, df_kyc_bus) -> pd.Dat
     f["inflow_per_day"]   = f["total_inflow"]  / f["time_span_days"]
     f["outflow_per_day"]  = f["total_outflow"] / f["time_span_days"]
 
-    # ATYPICAL-007/008: flow-through ratio — funds enter and immediately leave
+    # ATYPICAL-007/008: flow-through ratio — funds enter and immediately leave.
+    # Definition: min(inflow, outflow) / inflow. A pure conduit retains nothing,
+    # so inflow ≈ outflow and the ratio approaches 1.0. Dividing by inflow (not
+    # total_volume/2) gives the correct economic interpretation regardless of
+    # whether the account is net-inflow or net-outflow skewed.
     f["flow_through_ratio"] = (
-        np.minimum(f["total_inflow"], f["total_outflow"]) / (f["total_volume"] / 2 + 1)
+        np.minimum(f["total_inflow"], f["total_outflow"]) / (f["total_inflow"] + 1)
     )
 
     print(f"   Volume & velocity: {f.shape[1]-1} features")
@@ -569,8 +573,6 @@ def build_customer_features(txn: pd.DataFrame, df_kyc_ind, df_kyc_bus) -> pd.Dat
         unique_cities=("city",    "nunique"),
     ).reset_index()
     f = f.merge(geo, on="customer_id", how="left")
-    f["avg_txn_per_city"]     = f["transaction_count_total"] / (f["unique_cities"] + 0.1)
-    f["avg_txn_per_province"] = f["transaction_count_total"] / (f["unique_provinces"] + 0.1)
 
     intl = txn[txn["country"] != "CA"].groupby("customer_id").agg(
         international_txn_count=("amount_cad", "count"),
@@ -662,14 +664,7 @@ def build_customer_features(txn: pd.DataFrame, df_kyc_ind, df_kyc_bus) -> pd.Dat
     f["age"]                  = (pd.Timestamp.now() - f["birth_date"]).dt.days   / 365.25
     f["customer_tenure_days"] = (pd.Timestamp.now() - f["onboard_date"]).dt.days
 
-    # Segment-aware ratios
-    for col in ["total_outflow", "total_inflow", "total_volume",
-                "transactions_per_active_day", "flow_through_ratio"]:
-        for seg, mask in [("ind", f["is_individual"] == 1), ("bus", f["is_business"] == 1)]:
-            seg_median = f.loc[mask, col].median() if mask.sum() > 0 else 1
-            seg_p90    = f.loc[mask, col].quantile(0.90) if mask.sum() > 0 else 1
-            f[f"{col}_vs_{seg}_median"] = f[col] / (seg_median + 1)
-            f[f"{col}_above_{seg}_p90"] = (f[col] > seg_p90).astype(int)
+
 
     f["spending_to_income_ratio"] = (f["total_outflow"] / (f["income"] + 1)).fillna(0)
     f["volume_to_sales_ratio"]    = ((f["total_inflow"] + f["total_outflow"]) / (f["sales"] + 1)).fillna(0)
@@ -705,20 +700,9 @@ def build_customer_features(txn: pd.DataFrame, df_kyc_ind, df_kyc_bus) -> pd.Dat
     emt_norm     = pct_norm("count_emt")        if "count_emt"        in f.columns else z0
     card_norm    = pct_norm("count_card")       if "count_card"       in f.columns else z0
 
-    income_vol_norm = (
-        f["income_vol_ratio"].clip(upper=safe_quantile(f["income_vol_ratio"], 0.99)) /
-        safe_quantile(f["income_vol_ratio"], 0.99)
-    ).clip(0, 1)
-
-    vol_to_sales_norm = (
-        f["volume_to_sales_ratio"].clip(upper=safe_quantile(f["volume_to_sales_ratio"], 0.99)) /
-        safe_quantile(f["volume_to_sales_ratio"], 0.99)
-    ).clip(0, 1)
-
-    spending_income_norm = (
-        f["spending_to_income_ratio"].clip(upper=safe_quantile(f["spending_to_income_ratio"], 0.99)) /
-        safe_quantile(f["spending_to_income_ratio"], 0.99)
-    ).clip(0, 1)
+    income_vol_norm      = pct_norm("income_vol_ratio")
+    vol_to_sales_norm    = pct_norm("volume_to_sales_ratio")
+    spending_income_norm = pct_norm("spending_to_income_ratio")
 
     near_10k_norm = pct_norm("count_near_10k") if "count_near_10k" in f.columns else z0
 
@@ -910,10 +894,7 @@ def main():
     df = build_customer_features(txn, df_kyc_ind, df_kyc_bus)
     df = df.merge(df_labels, on="customer_id", how="left")
 
-    inf_cols = [c for c in df.columns if df[c].isin([np.inf, -np.inf]).any()]
-    if inf_cols:
-        for col in inf_cols:
-            df[col] = df[col].replace([np.inf, -np.inf], df[col].median())
+    # Note: inf/nan cleanup is handled inside build_customer_features().
 
     dupes = df["customer_id"].duplicated().sum()
     if dupes:

@@ -85,7 +85,7 @@ You will receive a JSON array. Each element represents one flagged customer and 
 customer_id: Unique customer identifier.
 final_hybrid_score: Ensemble risk score from 0.0 to 1.0. All customers in this batch exceed 0.60.
 hybrid_risk_category: Score band label — Very High or High.
-coverage: Data completeness ratio. 0.0 means full transaction history is available. 1.0 means no transaction history exists and the score is derived entirely from profile-based fallback heuristics. Values in between indicate partial history.
+coverage: Fraction of the 5 rule typologies where at least one rule fired (0.0 to 1.0). 0.0 means no deterministic rules triggered — the risk score is driven entirely by the unsupervised anomaly model. 1.0 means all five typologies produced rule signals, indicating strong multi-typology corroboration. Values in between indicate partial rule coverage.
 primary_rule_typology: The single typology domain where the customer scored highest under deterministic rules.
 rules_triggered: Total count of hard regulatory flags tripped.
 rule_indicator_trace: The exact list of rules fired with severity codes, e.g. "human_trafficking: R_HT_02(H) | structuring: R_ST_01(M)". This is your primary evidence source.
@@ -100,8 +100,13 @@ if_score_structuring_layering: Isolation forest anomaly score for structuring an
 if_score_behavioural_profile: Isolation forest anomaly score for behavioural and profile anomalies.
 if_score_trade_shell: Isolation forest anomaly score for trade-based ML and shell entity behaviour.
 if_score_cross_border_geo: Isolation forest anomaly score for cross-border and geographic risk behaviour.
+rule_human_trafficking: Rule-based risk score for human trafficking typology (0.0–1.0). Higher values indicate stronger match to human trafficking indicators.
+rule_structuring_layering: Rule-based risk score for structuring and layering typology (0.0–1.0).
+rule_behavioural_profile: Rule-based risk score for behavioural and profile anomaly typology (0.0–1.0).
+rule_trade_shell: Rule-based risk score for trade-based ML and shell entity typology (0.0–1.0).
+rule_cross_border_geo: Rule-based risk score for cross-border and geographic risk typology (0.0–1.0).
 cluster_primary_typology: The dominant AML typology of the peer cluster this customer belongs to.
-cluster_risk_tier: Baseline risk level of that peer cluster.
+cluster_risk_tier: Baseline risk level of that peer cluster (0.1 = lowest-risk cluster, 1.0 = highest-risk cluster).
 
 
 == AML INDICATOR REFERENCE ==
@@ -191,7 +196,7 @@ Each explanation is a single paragraph of 3 to 5 sentences written in plain Engl
 
 4. USE PEER CONTEXT PURPOSEFULLY. If cluster_primary_typology aligns with the rule evidence, briefly note that the customer's behaviour is consistent with a known high-risk peer group. If it diverges, note the discrepancy as an additional reason for scrutiny.
 
-5. FLAG LOW COVERAGE. If coverage is 0.60 or above, you must include this sentence verbatim: "Note: limited transaction history is available for this customer; the risk assessment relies partly on profile-based heuristics and should be weighted accordingly."
+5. FLAG LOW COVERAGE. If coverage is 0.20 or below, you must include this sentence verbatim: "Note: this customer's risk score is primarily driven by unsupervised behavioural anomaly detection rather than confirmed rule triggers; findings should be treated as anomaly-driven leads and weighted accordingly."
 
 6. DO NOT SPECULATE. Do not assert that money laundering or trafficking has occurred. Use hedged language: "is consistent with", "suggests", "warrants investigation for", "may indicate".
 
@@ -226,21 +231,7 @@ INPUT_FIELDS = [
     "cluster_risk_tier",
 ]
 
-TRACE_TYPOLOGY_MAP = {
-    "struct": "rule_structuring_layering",
-    "structuring": "rule_structuring_layering",
-    "structuring_layering": "rule_structuring_layering",
-    "behav": "rule_behavioural_profile",
-    "behavioural": "rule_behavioural_profile",
-    "behavioural_profile": "rule_behavioural_profile",
-    "trade": "rule_trade_shell",
-    "trade_shell": "rule_trade_shell",
-    "geo": "rule_cross_border_geo",
-    "cross_border_geo": "rule_cross_border_geo",
-    "cross-border": "rule_cross_border_geo",
-    "ht": "rule_human_trafficking",
-    "human_trafficking": "rule_human_trafficking",
-}
+
 
 
 # ---------------------------------------------------------------------------
@@ -290,52 +281,31 @@ def normalize_value(value):
     return str(value)
 
 
-def count_trace_indicators(trace: object) -> dict[str, int]:
-    counts = {
-        "rule_human_trafficking": 0,
-        "rule_structuring_layering": 0,
-        "rule_behavioural_profile": 0,
-        "rule_trade_shell": 0,
-        "rule_cross_border_geo": 0,
-    }
-    if pd.isna(trace) or not str(trace).strip():
-        return counts
-
-    for segment in str(trace).split("|"):
-        segment = segment.strip()
-        if ":" not in segment:
-            continue
-        prefix, items = segment.split(":", 1)
-        field_name = TRACE_TYPOLOGY_MAP.get(prefix.strip().lower())
-        if not field_name:
-            continue
-        counts[field_name] += len([item for item in items.split(",") if item.strip()])
-    return counts
-
 
 def build_input_record(row: pd.Series) -> dict:
-    trace_counts = count_trace_indicators(row.get("rule_indicator_trace"))
     record = {
-        "customer_id": normalize_value(row.get("customer_id")),
-        "final_hybrid_score": normalize_value(row.get("final_hybrid_score")),
-        "hybrid_risk_category": normalize_value(row.get("hybrid_risk_category")),
-        "coverage": normalize_value(row.get("coverage")),
-        "primary_rule_typology": normalize_value(row.get("primary_rule_typology")),
-        "rules_triggered": normalize_value(row.get("rules_triggered")),
-        "rule_indicator_trace": normalize_value(row.get("rule_indicator_trace")),
-        "rule_human_trafficking": trace_counts["rule_human_trafficking"],
-        "rule_structuring_layering": trace_counts["rule_structuring_layering"],
-        "rule_behavioural_profile": trace_counts["rule_behavioural_profile"],
-        "rule_trade_shell": trace_counts["rule_trade_shell"],
-        "rule_cross_border_geo": trace_counts["rule_cross_border_geo"],
-        "if_score_max": normalize_value(row.get("if_score_max")),
-        "if_score_human_trafficking": normalize_value(row.get("if_score_human_trafficking")),
-        "if_score_structuring_layering": normalize_value(row.get("if_score_structuring_layering")),
+        "customer_id":                  normalize_value(row.get("customer_id")),
+        "final_hybrid_score":           normalize_value(row.get("final_hybrid_score")),
+        "hybrid_risk_category":         normalize_value(row.get("hybrid_risk_category")),
+        "coverage":                     normalize_value(row.get("coverage")),
+        "primary_rule_typology":        normalize_value(row.get("primary_rule_typology")),
+        "rules_triggered":              normalize_value(row.get("rules_triggered")),
+        "rule_indicator_trace":         normalize_value(row.get("rule_indicator_trace")),
+        # Rule scores read directly from the evidence columns — more authoritative
+        # than re-parsing the trace, which only retains the top-5 indicators globally.
+        "rule_human_trafficking":       normalize_value(row.get("rule_human_trafficking")),
+        "rule_structuring_layering":    normalize_value(row.get("rule_structuring_layering")),
+        "rule_behavioural_profile":     normalize_value(row.get("rule_behavioural_profile")),
+        "rule_trade_shell":             normalize_value(row.get("rule_trade_shell")),
+        "rule_cross_border_geo":        normalize_value(row.get("rule_cross_border_geo")),
+        "if_score_max":                 normalize_value(row.get("if_score_max")),
+        "if_score_human_trafficking":   normalize_value(row.get("if_score_human_trafficking")),
+        "if_score_structuring_layering":normalize_value(row.get("if_score_structuring_layering")),
         "if_score_behavioural_profile": normalize_value(row.get("if_score_behavioural_profile")),
-        "if_score_trade_shell": normalize_value(row.get("if_score_trade_shell")),
-        "if_score_cross_border_geo": normalize_value(row.get("if_score_cross_border_geo")),
-        "cluster_primary_typology": normalize_value(row.get("cluster_primary_typology")),
-        "cluster_risk_tier": normalize_value(row.get("cluster_risk_tier")),
+        "if_score_trade_shell":         normalize_value(row.get("if_score_trade_shell")),
+        "if_score_cross_border_geo":    normalize_value(row.get("if_score_cross_border_geo")),
+        "cluster_primary_typology":     normalize_value(row.get("cluster_primary_typology")),
+        "cluster_risk_tier":            normalize_value(row.get("cluster_risk_tier")),
     }
     return {field: record.get(field) for field in INPUT_FIELDS}
 
