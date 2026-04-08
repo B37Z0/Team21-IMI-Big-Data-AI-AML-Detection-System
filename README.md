@@ -1,6 +1,8 @@
 # IMI Big Data & AI — AML Detection System
 
-Submission for the **2025–2026 IMI Big Data & Artificial Intelligence Competition** hosted by Scotiabank. The system is an end-to-end Anti-Money Laundering (AML) detection pipeline that scores, ranks, and explains customer risk using a hybrid ensemble of unsupervised machine learning, deterministic regulatory rules, and behavioral peer-grouping.
+Revised submission for the **2025–2026 IMI Big Data & Artificial Intelligence Competition** hosted by Scotiabank. The system is an end-to-end Anti-Money Laundering (AML) detection pipeline that scores, ranks, and explains customer risk using a hybrid ensemble of unsupervised machine learning, deterministic regulatory rules, and behavioral peer-grouping.
+
+The original submission placed 3rd overall in the competition. This revision was made to correct errors in the code and add reference documentation.
 
 ![Pipeline visualization](pipeline-visualization.png)
 

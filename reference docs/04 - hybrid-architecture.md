@@ -85,6 +85,6 @@ This ensures that the top 1% of flagged customers have either tripped hard FINTR
 The raw weights (`0.50`, `0.20`, `0.30`) do not dictate the absolute ceiling of the final score. After the raw sums are calculated, the entire population distribution is min-max normalized from 0.0 to 1.0. 
 
 The weights have been structured primarily to ensure regulatory compliance, and reflect to our best ability the relative impartial importance of each pillar:
-* **Regulatory Primacy:** Basic FINTRAC/FinCEN compliance should take precedence. If Customer A breaks explicit $10k reporting thresholds, the model should score a non-definite ML anomaly higher than them. The dynamic score is weighed (`0.50`) to ensure explicit rule-breakers loosely comprise a 'straightforward' half of the final score.
+* **Regulatory Primacy:** Basic FINTRAC/FinCEN compliance should take precedence. If Customer A breaks explicit $10k reporting thresholds, the model should not score a non-definite ML anomaly higher than them. The dynamic score is weighed (`0.50`) to ensure explicit rule-breakers loosely comprise a 'straightforward' half of the final score.
 * **Throttling the Safety Net:** The fallback is necessary, but pure ML anomalies should have a high false-positive rate. By throttling the fallback to `0.20`, a 'maximum undetected anomaly' (Coverage=0) scores `0.50` raw points (`0.2 IF + 0.3 KMeans`). A 'maximum rule-breaker' (Coverage=1) scores `0.80` raw points (`0.5 Dynamic + 0.3 KMeans`). 
 ---

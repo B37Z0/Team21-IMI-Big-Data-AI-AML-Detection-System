@@ -88,7 +88,7 @@ The system prompt (`SYSTEM_PROMPT`) is embedded as a module-level constant and p
 Defines every field the LLM will receive and its semantics. Critical: LLMs follow field descriptions literally, so any inaccuracy here propagates into every explanation produced.
 
 ### `== AML INDICATOR REFERENCE ==`
-A curated table of 36 indicator IDs across 5 typologies, with short descriptions and risk levels. The LLM is explicitly instructed:
+A curated table of 44 indicator IDs across 5 typologies, with short descriptions and risk levels. The LLM is explicitly instructed:
 - Only cite indicators genuinely supported by the evidence
 - Do not invent indicator IDs
 - Do not cite IDs absent from this table
